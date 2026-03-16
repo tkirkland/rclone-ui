@@ -121,7 +121,7 @@ export const CANNOT_PERSIST_EMPTY_FOLDERS = [
     'qingstor',
     'storj',
     'memory',
-] as const
+]
 
 export function supportsPersistentEmptyFolders(backendType?: string | null) {
     if (!backendType) return true
