@@ -110,6 +110,24 @@ export const SUPPORTS_ABOUT = [
     'local',
 ] as const
 
+export const CANNOT_PERSIST_EMPTY_FOLDERS = [
+    's3',
+    'gcs',
+    'azureblob',
+    'b2',
+    'swift',
+    'oracleobjectstorage',
+    'oos',
+    'qingstor',
+    'storj',
+    'memory',
+] as const
+
+export function supportsPersistentEmptyFolders(backendType?: string | null) {
+    if (!backendType) return true
+    return !CANNOT_PERSIST_EMPTY_FOLDERS.includes(backendType.toLowerCase())
+}
+
 // export const SUPPORTED_OPERATIONS = [
 //     {
 //         id: 'uncategorized',
