@@ -7,7 +7,7 @@ const RE_PATH_SEPARATOR = /[/\\]/
 
 export function formatBytes(bytes: number) {
     if (bytes < 1024) {
-        return `${bytes} B`
+        return `${Math.round(bytes)} B`
     }
 
     if (bytes < 1024 * 1024) {
