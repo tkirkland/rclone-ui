@@ -1,8 +1,11 @@
 name: 'release-linux'
 
 on:
-  workflow_dispatch
-
+  push:
+    branches:
+      - personal_changes
+  workflow_dispatch:
+  
 jobs:
   release-linux:
     permissions:
