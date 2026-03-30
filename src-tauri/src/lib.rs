@@ -96,7 +96,7 @@ async fn stop_pid(pid: u32, timeout_ms: Option<u64>) -> Result<(), String> {
             .args(&["-TERM", &pid_str])
             .status();
 
-        let deadline = Instant::now() + Duration::from_millis(timeout);
+        let deadline = Instant::now() + Duration::from_millis(_timeout);
         while Instant::now() < deadline {
             // Check if process still exists: kill -0 <pid>
             let alive = std::process::Command::new("kill")
