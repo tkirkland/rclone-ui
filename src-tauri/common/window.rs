@@ -61,6 +61,7 @@ pub async fn open_full_window(
         height -= 100.0;
     }
 
+    #[allow(unused_mut)]
     let mut builder = WebviewWindowBuilder::new(&app_handle, &name, WebviewUrl::App(url.into()))
         .title(&name)
         .inner_size(width, height)
@@ -114,6 +115,7 @@ pub async fn open_window(
     let width = width.unwrap_or(840.0);
     let height = height.unwrap_or(default_height);
 
+    #[allow(unused_mut)]
     let mut builder = WebviewWindowBuilder::new(&app_handle, &name, WebviewUrl::App(url.into()))
         .title(&name)
         .inner_size(width, height)
@@ -188,6 +190,7 @@ pub async fn open_small_window(
 	
     let os = std::env::consts::OS;
 
+    #[allow(unused_mut)]
     let mut builder = WebviewWindowBuilder::new(&app_handle, &name, WebviewUrl::App(url.into()))
         .title(&name)
         .inner_size(800.0, 500.0)

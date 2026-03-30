@@ -24,7 +24,6 @@ import { useSearchParams } from 'react-router-dom'
 import { formatBytes } from '../../../lib/format'
 import rclone from '../../../lib/rclone/client'
 import { SUPPORTS_ABOUT } from '../../../lib/rclone/constants'
-import { usePersistedStore } from '../../../store/persisted'
 import RemoteAutoMountDrawer from '../../components/RemoteAutoMountDrawer'
 import RemoteCreateDrawer from '../../components/RemoteCreateDrawer'
 import RemoteEditDrawer from '../../components/RemoteEditDrawer'
@@ -33,7 +32,6 @@ import BaseSection from './BaseSection'
 export default function RemotesSection() {
     const queryClient = useQueryClient()
     const [searchParams] = useSearchParams()
-    const licenseValid = usePersistedStore((state) => state.licenseValid)
 
     const remotesQuery = useQuery({
         queryKey: ['remotes', 'list', 'all'],
@@ -190,17 +188,6 @@ export default function RemotesSection() {
                         <Button
                             onPress={() => {
                                 setTimeout(async () => {
-                                    if (!licenseValid && remotes.length >= 4) {
-                                        await message(
-                                            'Community version does not support adding more than 4 remotes.',
-                                            {
-                                                title: 'Missing license',
-                                                kind: 'error',
-                                            }
-                                        )
-                                        return
-                                    }
-
                                     setCreatingDrawerOpen(true)
                                 }, 100)
                             }}

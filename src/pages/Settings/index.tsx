@@ -11,7 +11,6 @@ import {
     GlobeIcon,
     InfoIcon,
     KeyboardIcon,
-    MedalIcon,
     SatelliteDishIcon,
     ServerIcon,
     TabletSmartphoneIcon,
@@ -26,7 +25,6 @@ import AboutSection from './AboutSection'
 import ConfigSection from './ConfigSection'
 import GeneralSection from './GeneralSection'
 import HostsSection from './HostsSection'
-import LicenseSection from './LicenseSection'
 import MobileSection from './MobileSection'
 import ProxySection from './ProxySection'
 import RemotesSection from './RemotesSection'
@@ -287,19 +285,6 @@ export default function Settings() {
                     className="w-full max-h-screen p-0 overflow-scroll overscroll-none"
                 >
                     <MobileSection />
-                </Tab>
-                <Tab
-                    key="license"
-                    title={
-                        <div className="flex items-center gap-2">
-                            <MedalIcon className="w-5 h-5" />
-                            <span>License</span>
-                        </div>
-                    }
-                    data-focus-visible="false"
-                    className="w-full max-h-screen p-0 overflow-scroll overscroll-none"
-                >
-                    <LicenseSection />
                 </Tab>
                 <Tab
                     key="about"
