@@ -15,7 +15,7 @@ jobs:
       matrix:
         include:
           - platform: 'ubuntu-24.04'
-            args: ''
+            args: "--config '{\"bundle\":{\"createUpdaterArtifacts\":false}}'"
             assetPattern: '[name]_[arch][ext]'
           - platform: 'windows-11-arm'
             args: '--target x86_64-pc-windows-msvc'
