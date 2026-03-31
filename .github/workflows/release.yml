@@ -1,7 +1,10 @@
 name: 'release'
 
 on:
-  workflow_dispatch
+  push:
+    branches:
+      - personal_changes
+  workflow_dispatch:
 
 jobs:
   release-tauri:
@@ -11,34 +14,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: 'macos-latest'
-            args: '--target aarch64-apple-darwin'
-            arch: 'silicon'
-            type: 'aarch64'
-            assetPattern: '[name]_[arch][ext]'
-          - platform: 'macos-latest'
-            args: '--target x86_64-apple-darwin'
-            arch: 'silicon'
-            type: 'x86_64'
-            assetPattern: '[name]_[arch][ext]'
-          - platform: 'ubuntu-22.04' 
-            args: ''
-            assetPattern: '[name]_[arch][ext]'
-          - platform: 'ubuntu-24.04' 
-            args: "--config '{\"bundle\":{\"createUpdaterArtifacts\":false}}'"
-            assetPattern: '[name]_[arch]_ALTERNATE[ext]'
-          - platform: 'ubuntu-22.04-arm' 
+          - platform: 'ubuntu-24.04'
             args: ''
             assetPattern: '[name]_[arch][ext]'
           - platform: 'windows-11-arm'
             args: '--target x86_64-pc-windows-msvc'
             arch: 'arm64'
             type: 'x86_64'
-            assetPattern: '[name]_[arch][ext]'
-          - platform: "windows-11-arm"
-            args: "--target aarch64-pc-windows-msvc"
-            arch: 'arm64'
-            type: 'aarch64'
             assetPattern: '[name]_[arch][ext]'
 
     runs-on: ${{ matrix.platform }}

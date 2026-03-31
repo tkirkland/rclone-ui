@@ -1,7 +1,10 @@
 name: 'release-windows'
 
 on:
-  workflow_dispatch
+  push:
+    branches:
+      - personal_changes
+  workflow_dispatch:
 
 jobs:
   release-windows:
@@ -15,10 +18,6 @@ jobs:
             args: '--target x86_64-pc-windows-msvc --verbose'
             arch: 'arm64'
             type: 'x86_64'
-          - platform: "windows-11-arm"
-            args: "--target aarch64-pc-windows-msvc --verbose"
-            arch: 'arm64'
-            type: 'aarch64'
 
     runs-on: ${{ matrix.platform }}
     steps:
