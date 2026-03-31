@@ -16,7 +16,7 @@ jobs:
 
       - name: Append personal version suffix
         run: |
-          VERSION=$(grep -oP '"version":\s*"\K[^"]+' src-tauri/tauri.conf.json)
+          VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
           PERSONAL="${VERSION}-personal"
           sed -i "s/\"version\": \"${VERSION}\"/\"version\": \"${PERSONAL}\"/" src-tauri/tauri.conf.json
           sed -i "s/\"version\": \"${VERSION}\"/\"version\": \"${PERSONAL}\"/" package.json
@@ -69,7 +69,7 @@ jobs:
       - name: Append personal version suffix
         shell: bash
         run: |
-          VERSION=$(grep -oP '"version":\s*"\K[^"]+' src-tauri/tauri.conf.json)
+          VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
           PERSONAL="${VERSION}-personal"
           sed -i "s/\"version\": \"${VERSION}\"/\"version\": \"${PERSONAL}\"/" src-tauri/tauri.conf.json
           sed -i "s/\"version\": \"${VERSION}\"/\"version\": \"${PERSONAL}\"/" package.json
