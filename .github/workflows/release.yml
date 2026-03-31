@@ -54,7 +54,54 @@ jobs:
           releaseName: 'v__VERSION__'
           releaseBody: |
             # Rclone UI v__VERSION__ (Personal Build)
-            Linux x64 only. See assets below.
+            Linux x64 and Windows x64. Unsigned. See assets below.
+          releaseDraft: true
+          prerelease: false
+          args: "--config '{\"bundle\":{\"createUpdaterArtifacts\":false}}'"
+
+  release-windows:
+    permissions:
+      contents: write
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Append personal version suffix
+        shell: bash
+        run: |
+          VERSION=$(grep -oP '"version":\s*"\K[^"]+' src-tauri/tauri.conf.json)
+          PERSONAL="${VERSION}-personal"
+          sed -i "s/\"version\": \"${VERSION}\"/\"version\": \"${PERSONAL}\"/" src-tauri/tauri.conf.json
+          sed -i "s/\"version\": \"${VERSION}\"/\"version\": \"${PERSONAL}\"/" package.json
+          sed -i "s/^version = \"${VERSION}\"/version = \"${PERSONAL}\"/" src-tauri/Cargo.toml
+          echo "Patched version: ${VERSION} -> ${PERSONAL}"
+
+      - name: Setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: 'npm'
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install frontend dependencies
+        run: npm install
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__
+          releaseName: 'v__VERSION__'
+          releaseBody: |
+            # Rclone UI v__VERSION__ (Personal Build)
+            Linux x64 and Windows x64. Unsigned. See assets below.
           releaseDraft: true
           prerelease: false
           args: "--config '{\"bundle\":{\"createUpdaterArtifacts\":false}}'"
