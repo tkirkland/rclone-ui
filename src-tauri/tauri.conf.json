@@ -73,8 +73,7 @@
         "windows": {
             "nsis": {
                 "installMode": "both"
-            },
-            "signCommand": "trusted-signing-cli -e https://eus.codesigning.azure.net -a sign-1 -c Sign1 -d Rclone %1"
+            }
         },
         "linux": {
             "deb": {
