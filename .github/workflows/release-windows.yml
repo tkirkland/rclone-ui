@@ -1,9 +1,6 @@
 name: 'release-windows'
 
 on:
-  push:
-    branches:
-      - personal_changes
   workflow_dispatch:
 
 jobs:
