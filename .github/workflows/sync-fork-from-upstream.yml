@@ -1,4 +1,4 @@
-name: Sync fork from upstream
+name: 'sync-fork-from-upstream'
 
 on:
   schedule:
@@ -26,5 +26,10 @@ jobs:
           git remote add upstream https://github.com/rclone-ui/rclone-ui.git
           git fetch upstream
           git checkout main
+          cp .github/workflows/sync-fork-from-upstream.yml /tmp/sync-fork-from-upstream.yml
           git reset --hard upstream/main
+          mkdir -p .github/workflows
+          cp /tmp/sync-fork-from-upstream.yml .github/workflows/sync-fork-from-upstream.yml
+          git add .github/workflows/sync-fork-from-upstream.yml
+          git diff --staged --quiet || git commit -m "chore: preserve sync workflow"
           git push origin main --force-with-lease
