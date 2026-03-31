@@ -41,7 +41,7 @@ tauri-plugin-sentry = "0.5.0"
 sentry = "0.42"
 tauri-plugin-autostart = "2.5.1"
 tauri-plugin-single-instance = { version = "2.3.6", features = ["deep-link"] }
-tauri-plugin-updater = "2.9.0"
+
 tauri-plugin-clipboard-manager = "2.3.2"
 tauri-plugin-prevent-default = "3"
 reqwest = { version = "0.11", features = ["json"] }

@@ -8,7 +8,7 @@ import { debug, error, info, trace, warn } from '@tauri-apps/plugin-log'
 import { platform } from '@tauri-apps/plugin-os'
 import { exit, relaunch } from '@tauri-apps/plugin-process'
 import type { Child } from '@tauri-apps/plugin-shell'
-import { check } from '@tauri-apps/plugin-updater'
+
 import { CronExpressionParser } from 'cron-parser'
 import { defaultOptions } from 'tauri-plugin-sentry-api'
 import { getDeepLinkUrl, handleDeepLinkUrl } from './lib/deep'
@@ -879,123 +879,6 @@ async function handleTask(task: ScheduledTask) {
     }
 }
 
-async function checkVersion() {
-    console.log('[checkVersion]')
-
-    try {
-        console.log('[checkVersion] fetching meta.json')
-
-        const latestMeta = await fetch('https://rcloneui.com/latest')
-        console.log('[checkVersion] meta.json fetched')
-
-        const latestMetaData = (await latestMeta.json()) as {
-            minimumVersion: string
-            okVersion: string
-        }
-        console.log('[checkVersion] meta.json parsed')
-
-        const { minimumVersion, okVersion } = latestMetaData
-
-        console.log('[checkVersion] minimumVersion', minimumVersion)
-        console.log('[checkVersion] okVersion', okVersion)
-
-        const currentVersion = await getUiVersion()
-        console.log('[checkVersion] currentVersion', currentVersion)
-
-        if (
-            compareVersions(currentVersion, minimumVersion) >= 0 &&
-            compareVersions(currentVersion, okVersion) >= 0
-        ) {
-            console.log('[checkVersion] currentVersion is up to date')
-            return
-        }
-
-        console.log('[checkVersion] checking for update')
-
-        const receivedUpdate = await check({
-            allowDowngrades: true,
-            timeout: 30000,
-        })
-
-        console.log('[checkVersion] update check complete')
-
-        if (!receivedUpdate) {
-            console.log('[checkVersion] no update found')
-            return
-        }
-
-        if (compareVersions(currentVersion, minimumVersion) < 0) {
-            console.log('[checkVersion] currentVersion is outdated')
-
-            const confirmed = await ask(
-                'You are running an outdated version of Rclone UI. Please update to the latest version.',
-                {
-                    title: 'Update Required',
-                    kind: 'info',
-                    okLabel: 'Update',
-                    cancelLabel: 'Exit',
-                }
-            )
-
-            if (!confirmed) {
-                console.log('[checkVersion] user cancelled update')
-                return await exit(0)
-            }
-
-            console.log('[checkVersion] downloading and installing update')
-
-            await receivedUpdate.downloadAndInstall()
-
-            console.log('[checkVersion] update downloaded and installed')
-
-            await message('Rclone UI has been updated. Please restart the application.', {
-                title: 'Update Complete',
-                kind: 'info',
-                okLabel: 'Restart',
-            })
-
-            console.log('[checkVersion] relaunching app')
-
-            await getCurrentWindow().emit('relaunch-app')
-        } else if (compareVersions(currentVersion, okVersion) < 0) {
-            console.log('[checkVersion] checking for update')
-
-            const confirmed = await ask(
-                'You are running an outdated version of Rclone UI. Please update to the latest version.',
-                {
-                    title: 'Update Available',
-                    kind: 'info',
-                    okLabel: 'Update',
-                    cancelLabel: 'Cancel',
-                }
-            )
-
-            if (!confirmed) {
-                console.log('[checkVersion] user cancelled update')
-                return
-            }
-
-            console.log('[checkVersion] downloading and installing update')
-
-            await receivedUpdate.downloadAndInstall()
-
-            console.log('[checkVersion] update downloaded and installed')
-
-            await message('Rclone UI has been updated. Please restart the application.', {
-                title: 'Update Complete',
-                kind: 'info',
-                okLabel: 'Restart',
-            })
-
-            console.log('[checkVersion] relaunching app')
-
-            await getCurrentWindow().emit('relaunch-app')
-        }
-    } catch (error) {
-        console.error('[checkVersion] error', error)
-        Sentry.captureException(error)
-    }
-}
 
 async function checkRclone() {
     let currentHost = usePersistedStore.getState().currentHost
@@ -1114,7 +997,7 @@ async function handleDeepLink() {
 waitForHydration()
     .then(() => initializeHostStore())
     .then(() => checkHostReachability())
-    .then(() => checkVersion())
+
     .then(() => validateInstance())
     .then(() => checkAlreadyRunning())
     .then(() => startRclone())

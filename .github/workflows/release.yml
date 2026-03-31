@@ -30,6 +30,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Append personal version suffix
+        shell: bash
+        run: |
+          VERSION=$(grep -oP '"version":\s*"\K[^"]+' src-tauri/tauri.conf.json)
+          PERSONAL="${VERSION}-personal"
+          sed -i "s/\"version\": \"${VERSION}\"/\"version\": \"${PERSONAL}\"/" src-tauri/tauri.conf.json
+          sed -i "s/\"version\": \"${VERSION}\"/\"version\": \"${PERSONAL}\"/" package.json
+          sed -i "s/^version = \"${VERSION}\"/version = \"${PERSONAL}\"/" src-tauri/Cargo.toml
+          echo "Patched version: ${VERSION} -> ${PERSONAL}"
+
       - name: setup node
         uses: actions/setup-node@v4
         with:
@@ -160,9 +170,6 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           
-          # for updates
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           TAURI_BUNDLER_NEW_APPIMAGE_FORMAT: true
         with:
           tagName: v__VERSION__
