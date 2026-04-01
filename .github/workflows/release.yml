@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - personal_changes
+      - test/node-24
   workflow_dispatch:
 
 jobs:
@@ -26,7 +27,7 @@ jobs:
       - name: Setup node
         uses: actions/setup-node@v4
         with:
-          node-version: lts/*
+          node-version: 24
           cache: 'npm'
 
       - name: Install Rust stable
@@ -79,7 +80,7 @@ jobs:
       - name: Setup node
         uses: actions/setup-node@v4
         with:
-          node-version: lts/*
+          node-version: 24
           cache: 'npm'
 
       - name: Install Rust stable
