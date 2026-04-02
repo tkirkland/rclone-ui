@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C /c/Users/me/source/repos/rclone-ui diff)",
+      "Bash(git -C /c/Users/me/source/repos/rclone-ui branch -vv)",
+      "Bash(git -C /c/Users/me/source/repos/rclone-ui diff HEAD)",
+      "Bash(git -C /c/Users/me/source/repos/rclone-ui show main:.github/workflows/sync-upstream.yml)",
+      "Bash(git -C /c/Users/me/source/repos/rclone-ui remote -v)",
+      "Bash(git -C /c/Users/me/source/repos/rclone-ui checkout main)",
+      "Bash(git -C /c/Users/me/source/repos/rclone-ui rm .github/workflows/sync-upstream.yml)",
+      "Bash(git -C /c/Users/me/source/repos/rclone-ui add .github/workflows/sync-fork-from-upstream.yml)",
+      "Bash(git -C /c/Users/me/source/repos/rclone-ui status)",
+      "Bash(git -C:*)"
+    ]
+  }
+}

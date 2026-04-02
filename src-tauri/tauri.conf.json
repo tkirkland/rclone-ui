@@ -36,7 +36,7 @@
     },
     "bundle": {
         "active": true,
-        "targets": ["nsis", "dmg", "app", "appimage", "deb", "rpm"],
+        "targets": ["nsis", "deb", "rpm"],
         "icon": [
             "icons/32x32.png",
             "icons/128x128.png",
@@ -73,8 +73,7 @@
         "windows": {
             "nsis": {
                 "installMode": "both"
-            },
-            "signCommand": "trusted-signing-cli -e https://eus.codesigning.azure.net -a sign-1 -c Sign1 -d Rclone %1"
+            }
         },
         "linux": {
             "deb": {
@@ -87,15 +86,9 @@
                 "depends": ["(libappindicator-gtk3 or libayatana-appindicator-gtk3)"]
             }
         },
-        "createUpdaterArtifacts": true
+        "createUpdaterArtifacts": false
     },
     "plugins": {
-        "updater": {
-            "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDIyNDFENEZGNjFDNTBGOEYKUldTUEQ4VmgvOVJCSWhVZmw0enhmcW1kWFk3TS9mMzBDRjVEZWdxKzQ5ZmRhTlYvT2gvdFNMbE8K",
-            "endpoints": [
-                "https://github.com/rclone-ui/rclone-ui/releases/latest/download/latest.json"
-            ]
-        },
         "deep-link": {
             "desktop": {
                 "schemes": ["rclone"]

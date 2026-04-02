@@ -1,15 +1,10 @@
 import { Button, Checkbox, Chip, Input, Select, SelectItem } from '@heroui/react'
-import * as Sentry from '@sentry/browser'
-import { useMutation, useQuery } from '@tanstack/react-query'
-import { invoke } from '@tauri-apps/api/core'
-import { getCurrentWindow } from '@tauri-apps/api/window'
 import { disable, enable } from '@tauri-apps/plugin-autostart'
-import { ask, message } from '@tauri-apps/plugin-dialog'
-import { openUrl } from '@tauri-apps/plugin-opener'
+import { message } from '@tauri-apps/plugin-dialog'
 import { platform } from '@tauri-apps/plugin-os'
-import { type Update, check } from '@tauri-apps/plugin-updater'
+
 import { EyeIcon } from 'lucide-react'
-import { startTransition, useEffect, useMemo, useState } from 'react'
+import { startTransition, useEffect, useState } from 'react'
 import notify from '../../../lib/notify'
 import { usePersistedStore } from '../../../store/persisted'
 import BaseSection from './BaseSection'
@@ -26,113 +21,6 @@ export default function GeneralSection() {
     const hideStartup = usePersistedStore((state) => state.hideStartup)
     const appearance = usePersistedStore((state) => state.appearance)
 
-    const [updateButtonText, setUpdateButtonText] = useState('Check for updates')
-    const [update, setUpdate] = useState<Update | null>(null)
-
-    const flathubQuery = useQuery({
-        queryKey: ['flathub'],
-        queryFn: async () => {
-            const flathub = await invoke<boolean>('is_flathub')
-            return flathub
-        },
-    })
-
-    const isFlathub = useMemo(() => flathubQuery.data ?? true, [flathubQuery.data])
-
-    const checkUpdatesMutation = useMutation({
-        mutationFn: async () => {
-            if (!update) {
-                try {
-                    console.log('checking for updates')
-                    setUpdateButtonText('Checking...')
-                    let receivedUpdate: Update | null = null
-                    try {
-                        receivedUpdate = await check({
-                            allowDowngrades: true,
-                            timeout: 30000,
-                        })
-                    } catch (e) {
-                        Sentry.captureException(e)
-                        console.error(e)
-                        setUpdateButtonText('Failed to check')
-                        return
-                    }
-                    console.log('receivedUpdate', JSON.stringify(receivedUpdate, null, 2))
-                    if (!receivedUpdate) {
-                        setUpdateButtonText('Up to date')
-                        return
-                    }
-                    console.log(
-                        `found update ${receivedUpdate.version} from ${receivedUpdate.date} with notes ${receivedUpdate.body}`
-                    )
-                    setUpdate(receivedUpdate)
-                    setUpdateButtonText('Tap to update')
-                } catch (e) {
-                    Sentry.captureException(e)
-                    console.error(e)
-                }
-                return
-            }
-
-            setUpdateButtonText('Downloading...')
-
-            try {
-                let downloaded = 0
-                let contentLength = 0
-
-                await update.downloadAndInstall((event) => {
-                    // biome-ignore lint/style/useDefaultSwitchClause: <explanation>
-                    switch (event.event) {
-                        case 'Started': {
-                            contentLength = event.data.contentLength || 0
-                            console.log(`started downloading ${event.data.contentLength} bytes`)
-                            break
-                        }
-                        case 'Progress': {
-                            downloaded += event.data.chunkLength
-                            console.log(`downloaded ${downloaded} from ${contentLength}`)
-                            break
-                        }
-                        case 'Finished':
-                            console.log('download finished')
-                            break
-                    }
-                })
-            } catch (error) {
-                Sentry.captureException(error)
-                console.error(error)
-                setUpdateButtonText('Tap to retry')
-                const wantsManualDownload = await ask(
-                    'An error occurred in the update process. Please try again or tap "Download" to download the update manually.',
-                    {
-                        title: 'Update Error',
-                        kind: 'error',
-                        okLabel: 'Download',
-                        cancelLabel: 'Cancel',
-                    }
-                )
-
-                if (wantsManualDownload) {
-                    await openUrl('https://github.com/rclone-ui/rclone-ui/releases/latest')
-                }
-
-                return
-            }
-
-            const answer = await ask('Update installed. Ready to restart?', {
-                title: 'Update',
-                kind: 'info',
-                okLabel: 'Restart',
-                cancelLabel: 'Later',
-            })
-
-            if (!answer) {
-                return
-            }
-
-            await getCurrentWindow().emit('relaunch-app')
-        },
-    })
 
     useEffect(() => {
         // needed since the first value from the persisted store is undefined
@@ -312,22 +200,6 @@ export default function GeneralSection() {
                 </div>
             </div>
 
-            {!isFlathub && (
-                <div className="flex flex-row justify-center w-full gap-8 px-8">
-                    <div className="flex flex-col items-end flex-grow gap-2">
-                        <h3 className="font-medium">Update</h3>
-                    </div>
-
-                    <div className="flex flex-col w-3/5 gap-3">
-                        <Button
-                            isLoading={checkUpdatesMutation.isPending}
-                            onPress={() => setTimeout(() => checkUpdatesMutation.mutate(), 100)}
-                        >
-                            {updateButtonText}
-                        </Button>
-                    </div>
-                </div>
-            )}
         </BaseSection>
     )
 }

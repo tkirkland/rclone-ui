@@ -11,7 +11,6 @@ import { startTransition, useCallback, useEffect, useState } from 'react'
 import { useFlags } from '../../lib/hooks'
 import { lockWindows, unlockWindows } from '../../lib/window'
 import { type RemoteConfig, useHostStore } from '../../store/host'
-import { usePersistedStore } from '../../store/persisted'
 import OptionsSection from './OptionsSection'
 
 const parseJson = <T,>(json: string) => {
@@ -33,7 +32,6 @@ export default function RemoteAutoMountDrawer({
 }) {
     const { globalFlags, filterFlags, configFlags, mountFlags, vfsFlags } = useFlags()
 
-    const licenseValid = usePersistedStore((state) => state.licenseValid)
     const remoteConfigs = useHostStore((state) => state.remoteConfigs)
     const mergeRemoteConfig = useHostStore((state) => state.mergeRemoteConfig)
 
@@ -266,18 +264,7 @@ export default function RemoteAutoMountDrawer({
                                         <Checkbox
                                             isSelected={config?.mountOnStart?.enabled || false}
                                             onValueChange={async (value) => {
-                                                if (!licenseValid) {
-                                                    await message(
-                                                        'Community version does not support mount on startup.',
-                                                        {
-                                                            title: 'Missing license',
-                                                            kind: 'error',
-                                                        }
-                                                    )
-                                                    return
-                                                }
-
-                                                if (
+                                                                if (
                                                     !config?.mountOnStart?.mountPoint ||
                                                     !config?.mountOnStart?.remotePath
                                                 ) {

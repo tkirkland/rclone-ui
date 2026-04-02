@@ -3,7 +3,7 @@ use sentry;
 use std::fs::{self, File};
 use std::path::Path;
 use sysinfo::System;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 use tauri_plugin_sentry;
 use tinyfiledialogs as tfd;
 use zip::ZipArchive;
@@ -77,7 +77,7 @@ fn unzip_file(zip_path: &str, output_folder: &str) -> Result<(), String> {
 
 #[tauri::command]
 async fn stop_pid(pid: u32, timeout_ms: Option<u64>) -> Result<(), String> {
-    let timeout = timeout_ms.unwrap_or(5000);
+    let _timeout = timeout_ms.unwrap_or(5000);
 
     #[cfg(any(
         target_os = "macos",
@@ -96,7 +96,7 @@ async fn stop_pid(pid: u32, timeout_ms: Option<u64>) -> Result<(), String> {
             .args(&["-TERM", &pid_str])
             .status();
 
-        let deadline = Instant::now() + Duration::from_millis(timeout);
+        let deadline = Instant::now() + Duration::from_millis(_timeout);
         while Instant::now() < deadline {
             // Check if process still exists: kill -0 <pid>
             let alive = std::process::Command::new("kill")
@@ -130,8 +130,6 @@ async fn stop_pid(pid: u32, timeout_ms: Option<u64>) -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     {
-        use std::time::{Duration, Instant};
-
         let pid_str = pid.to_string();
 
         let _ = std::process::Command::new("taskkill")
@@ -242,6 +240,7 @@ async fn stop_rclone_processes(timeout_ms: Option<u64>) -> Result<u32, String> {
     Ok(stopped)
 }
 
+#[allow(dead_code)]
 async fn prompt_password(title: String, message: String) -> Result<Option<String>, String> {
     prompt_text(title, message, None, Some(true)).await
 }
@@ -398,6 +397,7 @@ async fn prompt_text(
     }
 }
 
+#[allow(dead_code)]
 async fn tiny_prompt_text(
     title: String,
     message: String,
@@ -800,11 +800,12 @@ pub fn run() {
             }));
     }
 
+    #[allow(unused_mut)]
     let mut app = builder
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_sentry::init_with_no_injection(&client))
         .plugin(tauri_plugin_clipboard_manager::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
+
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_process::init())
