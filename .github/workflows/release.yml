@@ -115,7 +115,7 @@ jobs:
           tagName: v__VERSION__
           releaseName: 'v__VERSION__'
           releaseBody: ${{ steps.changelog.outputs.BODY }}
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
           args: "--config '{\"bundle\":{\"createUpdaterArtifacts\":false}}'"
 
@@ -160,6 +160,6 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: 'v__VERSION__'
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
           args: "--config '{\"bundle\":{\"createUpdaterArtifacts\":false}}'"
