@@ -10,7 +10,29 @@
       "Bash(git -C /c/Users/me/source/repos/rclone-ui rm .github/workflows/sync-upstream.yml)",
       "Bash(git -C /c/Users/me/source/repos/rclone-ui add .github/workflows/sync-fork-from-upstream.yml)",
       "Bash(git -C /c/Users/me/source/repos/rclone-ui status)",
-      "Bash(git -C:*)"
+      "Bash(git -C:*)",
+      "Bash(gh workflow:*)",
+      "Skill(update-config)",
+      "Skill(update-config:*)",
+      "Bash(find C:Usersmesourcereposrclone-ui -type f \\\\\\(-name *cloudflare* -o -name *tunnel* \\\\\\))",
+      "Bash(find C:Usersmesourcereposrclone-ui -maxdepth 2 -type f \\\\\\(-name package.json -o -name *.toml -o -name *.yml -o -name *.yaml -o -name *.md \\\\\\))",
+      "Bash(winget install:*)",
+      "Bash(git -C /c/Users/me/source/repos/rclone-ui stash)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(gh run:*)",
+      "Bash(where gh:*)",
+      "Bash(git checkout:*)",
+      "Bash(gh pr:*)",
+      "Bash(git remote:*)",
+      "WebFetch(domain:github.com)",
+      "Bash(winget --version)",
+      "Bash(export PATH=\"$PATH:/c/Program Files/GitHub CLI\")",
+      "Bash(gh --version)",
+      "Bash(gh auth:*)",
+      "Bash(gh api:*)",
+      "Bash(python -m json.tool)"
     ]
   }
 }
