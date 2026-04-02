@@ -1,0 +1,69 @@
+name: 'sync-fork-from-upstream'
+
+on:
+  schedule:
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Sync main from upstream
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/rclone-ui/rclone-ui.git
+          git fetch upstream
+          BEFORE=$(git rev-parse HEAD)
+          git checkout main
+          cp .github/workflows/sync-fork-from-upstream.yml /tmp/sync-fork-from-upstream.yml
+          git reset --hard upstream/main
+          mkdir -p .github/workflows
+          cp /tmp/sync-fork-from-upstream.yml .github/workflows/sync-fork-from-upstream.yml
+          git add .github/workflows/sync-fork-from-upstream.yml
+          git diff --staged --quiet || git commit -m "chore: preserve sync workflow"
+          AFTER=$(git rev-parse HEAD)
+          git push origin main --force-with-lease
+          if [ "$BEFORE" = "$AFTER" ]; then
+            echo "UPSTREAM_CHANGED=false" >> $GITHUB_ENV
+          else
+            echo "UPSTREAM_CHANGED=true" >> $GITHUB_ENV
+          fi
+
+      - name: Merge main into personal_changes
+        if: env.UPSTREAM_CHANGED == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git fetch origin personal_changes
+          git checkout personal_changes
+          if git merge main --no-edit; then
+            git push origin personal_changes
+            echo "MERGE_STATUS=success" >> $GITHUB_ENV
+          else
+            git merge --abort
+            echo "MERGE_STATUS=conflict" >> $GITHUB_ENV
+          fi
+
+      - name: Open issue on merge conflict
+        if: env.UPSTREAM_CHANGED == 'true' && env.MERGE_STATUS == 'conflict'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          UPSTREAM_VERSION=$(grep -oP '"version":\s*"\K[^"]+' src-tauri/tauri.conf.json || echo "unknown")
+          gh issue create \
+            --title "Merge conflict: upstream v${UPSTREAM_VERSION} → personal_changes" \
+            --body "The daily upstream sync updated main but the merge into personal_changes failed due to conflicts. Manual merge required." \
+            --label "merge-conflict"
