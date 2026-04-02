@@ -13,6 +13,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Append personal version suffix
         run: |
@@ -23,17 +25,74 @@ jobs:
           sed -i "s/^version = \"${VERSION}\"/version = \"${PERSONAL}\"/" src-tauri/Cargo.toml
           echo "Patched version: ${VERSION} -> ${PERSONAL}"
 
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # Find the latest release tag
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+
+          if [ -n "$LAST_TAG" ]; then
+            echo "Generating changelog since $LAST_TAG"
+            RANGE="${LAST_TAG}..HEAD"
+          else
+            echo "No previous tag found — using full history"
+            RANGE="HEAD"
+          fi
+
+          # Build categorized changelog
+          {
+            echo "BODY<<CHANGELOG_EOF"
+            echo "# Rclone UI v\${VERSION}-personal"
+            echo ""
+            echo "Linux x64 and Windows x64. Unsigned personal build."
+            echo ""
+
+            # Upstream changes (merge commits from sync)
+            UPSTREAM=$(git log "$RANGE" --oneline --grep="upstream" --grep="sync" --all-match 2>/dev/null || true)
+            if [ -n "$UPSTREAM" ]; then
+              echo "## 🔄 Upstream"
+              echo "$UPSTREAM" | sed 's/^[a-f0-9]* /- /'
+              echo ""
+            fi
+
+            # Features
+            FEATURES=$(git log "$RANGE" --oneline --grep="^feat" --no-merges 2>/dev/null || true)
+            if [ -n "$FEATURES" ]; then
+              echo "## ✨ Features"
+              echo "$FEATURES" | sed 's/^[a-f0-9]* /- /'
+              echo ""
+            fi
+
+            # Fixes
+            FIXES=$(git log "$RANGE" --oneline --grep="^fix" --no-merges 2>/dev/null || true)
+            if [ -n "$FIXES" ]; then
+              echo "## 🐛 Fixes"
+              echo "$FIXES" | sed 's/^[a-f0-9]* /- /'
+              echo ""
+            fi
+
+            # Other changes (chore, refactor, test, docs, etc.)
+            OTHER=$(git log "$RANGE" --oneline --no-merges --invert-grep --grep="^feat" --grep="^fix" 2>/dev/null || true)
+            if [ -n "$OTHER" ]; then
+              echo "## 🔧 Other"
+              echo "$OTHER" | sed 's/^[a-f0-9]* /- /'
+              echo ""
+            fi
+
+            echo "CHANGELOG_EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Setup node
         uses: actions/setup-node@v4
         with:
-          node-version: lts/*
+          node-version: 24
           cache: 'npm'
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
       - name: Rust cache
-        uses: swatinem/rust-cache@v2
+        uses: swatinem/rust-cache@v2.8.1
         with:
           workspaces: './src-tauri -> target'
 
@@ -52,14 +111,13 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: 'v__VERSION__'
-          releaseBody: |
-            # Rclone UI v__VERSION__ (Personal Build)
-            Linux x64 and Windows x64. Unsigned. See assets below.
+          releaseBody: ${{ steps.changelog.outputs.BODY }}
           releaseDraft: true
           prerelease: false
           args: "--config '{\"bundle\":{\"createUpdaterArtifacts\":false}}'"
 
   release-windows:
+    needs: release-linux
     permissions:
       contents: write
     runs-on: windows-latest
@@ -79,14 +137,14 @@ jobs:
       - name: Setup node
         uses: actions/setup-node@v4
         with:
-          node-version: lts/*
+          node-version: 24
           cache: 'npm'
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
       - name: Rust cache
-        uses: swatinem/rust-cache@v2
+        uses: swatinem/rust-cache@v2.8.1
         with:
           workspaces: './src-tauri -> target'
 
@@ -99,9 +157,6 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: 'v__VERSION__'
-          releaseBody: |
-            # Rclone UI v__VERSION__ (Personal Build)
-            Linux x64 and Windows x64. Unsigned. See assets below.
           releaseDraft: true
           prerelease: false
           args: "--config '{\"bundle\":{\"createUpdaterArtifacts\":false}}'"
