@@ -7,7 +7,6 @@ on:
 
 permissions:
   contents: write
-  workflows: write
 
 jobs:
   sync:
@@ -37,7 +36,8 @@ jobs:
           git checkout main
           git reset --hard upstream/main
 
-          # Restore personal workflow files
+          # Remove upstream workflow files and restore only personal ones
+          rm -rf .github/workflows/*
           mkdir -p .github/workflows
           cp /tmp/workflows/sync-fork-from-upstream.yml .github/workflows/sync-fork-from-upstream.yml
           cp /tmp/workflows/release.yml .github/workflows/release.yml
