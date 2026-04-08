@@ -13,54 +13,38 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout fork
+      - name: Checkout personal_changes
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: main
+          ref: personal_changes
 
-      - name: Sync main from upstream
+      - name: Mirror main from upstream
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git remote add upstream https://github.com/rclone-ui/rclone-ui.git
           git fetch upstream
+          git fetch origin main
 
-          BEFORE=$(git rev-parse HEAD)
-
-          # Preserve personal workflow files before wiping main
-          mkdir -p /tmp/workflows
-          cp .github/workflows/sync-fork-from-upstream.yml /tmp/workflows/
-          cp .github/workflows/release.yml /tmp/workflows/
-
-          git checkout main
-          git reset --hard upstream/main
-
-          # Remove upstream workflow files and restore only personal ones
-          rm -rf .github/workflows/*
-          mkdir -p .github/workflows
-          cp /tmp/workflows/sync-fork-from-upstream.yml .github/workflows/sync-fork-from-upstream.yml
-          cp /tmp/workflows/release.yml .github/workflows/release.yml
-
-          git add .github/workflows/
-          git diff --staged --quiet || git commit -m "chore: preserve personal workflows after upstream sync"
-
-          AFTER=$(git rev-parse HEAD)
-          git push origin main --force-with-lease
+          BEFORE=$(git rev-parse origin/main)
+          AFTER=$(git rev-parse upstream/main)
 
           if [ "$BEFORE" = "$AFTER" ]; then
+            echo "main already matches upstream/main, nothing to mirror"
             echo "UPSTREAM_CHANGED=false" >> $GITHUB_ENV
           else
+            git push origin "upstream/main:refs/heads/main" --force-with-lease
             echo "UPSTREAM_CHANGED=true" >> $GITHUB_ENV
           fi
 
       - name: Merge main into personal_changes
         if: env.UPSTREAM_CHANGED == 'true'
         run: |
-          git fetch origin personal_changes
+          git fetch origin main
           git checkout personal_changes
 
-          if git merge main --no-edit; then
+          if git merge origin/main --no-edit; then
             git push origin personal_changes
             echo "MERGE_STATUS=success" >> $GITHUB_ENV
           else
