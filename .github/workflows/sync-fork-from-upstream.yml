@@ -52,8 +52,25 @@ jobs:
             echo "MERGE_STATUS=conflict" >> $GITHUB_ENV
           fi
 
-      - name: Fail loudly on merge conflict
+      - name: Open sync PR on merge conflict
         if: env.UPSTREAM_CHANGED == 'true' && env.MERGE_STATUS == 'conflict'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "::error::Merge conflict detected merging upstream main into personal_changes. Manual intervention required."
-          exit 1
+          echo "::warning::Merge conflict detected — opening/refreshing sync PR."
+
+          # Reuse existing open sync PR if one exists, otherwise create one.
+          EXISTING=$(gh pr list --base personal_changes --head main --state open --json number --jq '.[0].number')
+
+          if [ -n "$EXISTING" ]; then
+            echo "Existing sync PR #$EXISTING is still open — leaving it in place."
+            gh pr comment "$EXISTING" --body "Another upstream sync attempted on $(date -u +%Y-%m-%d) and still conflicts. Please resolve."
+          else
+            gh pr create \
+              --base personal_changes \
+              --head main \
+              --title "sync: upstream main has conflicts with personal_changes" \
+              --body "The nightly sync workflow could not auto-merge \`main\` (upstream mirror) into \`personal_changes\`.
+
+          Resolve the conflicts in the GitHub web editor or locally, then merge this PR. Once merged, the nightly sync will resume clean merges automatically."
+          fi
