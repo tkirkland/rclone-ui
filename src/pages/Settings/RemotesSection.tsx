@@ -7,6 +7,7 @@ import {
     DropdownMenu,
     DropdownTrigger,
     Spinner,
+    Input,
 } from '@heroui/react'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ask, message } from '@tauri-apps/plugin-dialog'
@@ -16,6 +17,7 @@ import {
     PencilIcon,
     PlusIcon,
     RefreshCcwIcon,
+    SearchIcon,
     SettingsIcon,
     Trash2Icon,
 } from 'lucide-react'
@@ -75,6 +77,18 @@ export default function RemotesSection() {
                 return a.localeCompare(b)
             }),
         [remotes, remoteConfigQueries]
+    )
+
+    const [searchQuery, setSearchQuery] = useState('')
+
+    const filteredRemotes = useMemo(
+        () =>
+            searchQuery
+                ? sortedRemotes.filter((r) =>
+                      r.toLowerCase().includes(searchQuery.toLowerCase())
+                  )
+                : sortedRemotes,
+        [sortedRemotes, searchQuery]
     )
 
     const [pickedRemote, setPickedRemote] = useState<string | null>(null)
@@ -207,7 +221,21 @@ export default function RemotesSection() {
 
             {!Placeholder && (
                 <div className="flex flex-col gap-2.5 px-4 pb-10">
-                    {sortedRemotes.map((remote) => (
+                    {sortedRemotes.length > 5 && (
+                        <Input
+                            placeholder="Search remotes..."
+                            value={searchQuery}
+                            onValueChange={setSearchQuery}
+                            startContent={<SearchIcon className="w-4 h-4 opacity-50" />}
+                            size="sm"
+                            variant="flat"
+                            isClearable={true}
+                            onClear={() => setSearchQuery('')}
+                            data-focus-visible="false"
+                            classNames={{ inputWrapper: 'bg-content2/60' }}
+                        />
+                    )}
+                    {filteredRemotes.map((remote) => (
                         <RemoteCard
                             key={remote}
                             remote={remote}
