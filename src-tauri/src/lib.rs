@@ -790,13 +790,7 @@ pub fn run() {
     if !is_flathub() {
         builder = builder
             .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-                if let Some(window) = app
-                    .webview_windows()
-                    .values()
-                    .find(|w| w.label() != "main")
-                {
-                    let _ = window.set_focus();
-                }
+                let _ = shortcut::show_toolbar_window(app);
             }));
     }
 
