@@ -416,15 +416,15 @@ export default function Sync() {
                         startTransition(() => {
                             if (shouldMerge) {
                                 if (groupedOptions.sync)
-                                    setSyncOptions({ ...syncOptions, ...groupedOptions.sync })
+                                    setSyncOptionsJsonString(JSON.stringify({ ...syncOptions, ...groupedOptions.sync }, null, 2))
                                 if (groupedOptions.filter)
-                                    setFilterOptions({ ...filterOptions, ...groupedOptions.filter })
+                                    setFilterOptionsJsonString(JSON.stringify({ ...filterOptions, ...groupedOptions.filter }, null, 2))
                                 if (groupedOptions.config)
-                                    setConfigOptions({ ...configOptions, ...groupedOptions.config })
+                                    setConfigOptionsJsonString(JSON.stringify({ ...configOptions, ...groupedOptions.config }, null, 2))
                             } else {
-                                if (groupedOptions.sync) setSyncOptions(groupedOptions.sync)
-                                if (groupedOptions.filter) setFilterOptions(groupedOptions.filter)
-                                if (groupedOptions.config) setConfigOptions(groupedOptions.config)
+                                if (groupedOptions.sync) setSyncOptionsJsonString(JSON.stringify(groupedOptions.sync, null, 2))
+                                if (groupedOptions.filter) setFilterOptionsJsonString(JSON.stringify(groupedOptions.filter, null, 2))
+                                if (groupedOptions.config) setConfigOptionsJsonString(JSON.stringify(groupedOptions.config, null, 2))
                             }
                         })
                     }}

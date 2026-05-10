@@ -365,8 +365,6 @@ function RemoteCard({
         enabled: supportsAbout,
     })
 
-    console.log('about', remote, type, JSON.stringify(remoteAboutData, null, 2))
-
     const imageUrl = useMemo(
         () =>
             provider && !type ? `/icons/providers/${provider}.png` : `/icons/backends/${type}.png`,

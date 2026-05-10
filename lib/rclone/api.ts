@@ -892,7 +892,7 @@ export async function startBisync({
         {
             retries: 3,
         }
-    ).catch(null)
+    ).catch(() => null)
 
     console.log('jobStatus', JSON.stringify(jobStatus, null, 2))
 
@@ -988,7 +988,7 @@ export async function startSync({
         {
             retries: 3,
         }
-    ).catch(null)
+    ).catch(() => null)
 
     console.log('jobStatus', JSON.stringify(jobStatus, null, 2))
 
@@ -1229,7 +1229,7 @@ export async function startBatch(inputs: ({ _path: string } & Record<string, any
         {
             retries: 3,
         }
-    ).catch(null)
+    ).catch(() => null)
 
     console.log('[startBatch] jobStatus', {
         jobid: r.jobid,

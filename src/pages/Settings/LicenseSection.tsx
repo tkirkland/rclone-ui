@@ -109,22 +109,18 @@ export default function LicenseSection() {
                             try {
                                 await validateLicense(licenseKeyInput)
                             } catch (e) {
-                                if (e instanceof Error) {
-                                    await message(e.message, {
+                                await message(
+                                    e instanceof Error ? e.message : 'An error occurred. Please try again.',
+                                    {
                                         title: 'Error',
                                         kind: 'error',
                                         okLabel: 'Ok',
-                                    })
-                                    return
-                                }
-
-                                await message('An error occurred. Please try again.', {
-                                    title: 'Error',
-                                    kind: 'error',
-                                    okLabel: 'Ok',
-                                })
+                                    }
+                                )
+                                return
+                            } finally {
+                                setIsActivating(false)
                             }
-                            setIsActivating(false)
 
                             await message('Your license has been successfully activated.', {
                                 title: 'Congrats!',
@@ -165,22 +161,18 @@ export default function LicenseSection() {
                             try {
                                 await revokeMachineLicense(licenseKeyInput)
                             } catch (e) {
-                                if (e instanceof Error) {
-                                    await message(e.message, {
+                                await message(
+                                    e instanceof Error ? e.message : 'An error occurred. Please try again.',
+                                    {
                                         title: 'Error',
                                         kind: 'error',
                                         okLabel: 'Ok',
-                                    })
-                                    return
-                                }
-
-                                await message('An error occurred. Please try again.', {
-                                    title: 'Error',
-                                    kind: 'error',
-                                    okLabel: 'Ok',
-                                })
+                                    }
+                                )
+                                return
+                            } finally {
+                                setIsRevoking(false)
                             }
-                            setIsRevoking(false)
 
                             await message('Your license has been successfully deactivated.', {
                                 title: 'License deactivated',

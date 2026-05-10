@@ -266,7 +266,7 @@ export default function Copy() {
         if (startCopyMutation.isPending) return 'STARTING...'
         if (!sources || sources.length === 0) return 'Please select a source path'
         if (!dest) return 'Please select a destination path'
-        if (sources[0] === dest) return 'Source and destination cannot be the same'
+        if (sources.some((s) => s === dest)) return 'Source and destination cannot be the same'
         if (jsonError) return 'Invalid JSON for ' + jsonError.toUpperCase() + ' options'
         if (cronExpression) return 'START AND SCHEDULE COPY'
         return 'START COPY'
@@ -274,7 +274,7 @@ export default function Copy() {
 
     const buttonIcon = useMemo(() => {
         if (startCopyMutation.isPending) return
-        if (!sources || sources.length === 0 || !dest || sources[0] === dest)
+        if (!sources || sources.length === 0 || !dest || sources.some((s) => s === dest))
             return <FoldersIcon className="w-5 h-5" />
         if (jsonError) return <AlertOctagonIcon className="w-5 h-5" />
         return <PlayIcon className="w-5 h-5 fill-current" />
@@ -411,15 +411,15 @@ export default function Copy() {
                         startTransition(() => {
                             if (shouldMerge) {
                                 if (groupedOptions.copy)
-                                    setCopyOptions({ ...copyOptions, ...groupedOptions.copy })
+                                    setCopyOptionsJsonString(JSON.stringify({ ...copyOptions, ...groupedOptions.copy }, null, 2))
                                 if (groupedOptions.filter)
-                                    setFilterOptions({ ...filterOptions, ...groupedOptions.filter })
+                                    setFilterOptionsJsonString(JSON.stringify({ ...filterOptions, ...groupedOptions.filter }, null, 2))
                                 if (groupedOptions.config)
-                                    setConfigOptions({ ...configOptions, ...groupedOptions.config })
+                                    setConfigOptionsJsonString(JSON.stringify({ ...configOptions, ...groupedOptions.config }, null, 2))
                             } else {
-                                if (groupedOptions.copy) setCopyOptions(groupedOptions.copy)
-                                if (groupedOptions.filter) setFilterOptions(groupedOptions.filter)
-                                if (groupedOptions.config) setConfigOptions(groupedOptions.config)
+                                if (groupedOptions.copy) setCopyOptionsJsonString(JSON.stringify(groupedOptions.copy, null, 2))
+                                if (groupedOptions.filter) setFilterOptionsJsonString(JSON.stringify(groupedOptions.filter, null, 2))
+                                if (groupedOptions.config) setConfigOptionsJsonString(JSON.stringify(groupedOptions.config, null, 2))
                             }
                         })
                     }}
@@ -565,7 +565,7 @@ export default function Copy() {
                                     !sources ||
                                     sources.length === 0 ||
                                     !dest ||
-                                    sources[0] === dest
+                                    sources.some((s) => s === dest)
                                 }
                                 isLoading={startCopyMutation.isPending}
                                 endContent={buttonIcon}
@@ -597,7 +597,7 @@ export default function Copy() {
                                     !sources ||
                                     sources.length === 0 ||
                                     !dest ||
-                                    sources[0] === dest
+                                    sources.some((s) => s === dest)
                                 ) {
                                     return
                                 }

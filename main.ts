@@ -636,6 +636,11 @@ async function resumeTasks() {
             isEnabled: task.isEnabled,
         })
 
+        if (!task.isEnabled) {
+            console.log('[resumeTasks] task', task.id, 'is disabled, skipping')
+            continue
+        }
+
         if (task.isRunning) {
             console.log('[resumeTasks] task', task.id, 'was marked as running, resetting state')
             useHostStore.getState().updateScheduledTask(task.id, {
@@ -866,8 +871,6 @@ async function handleTask(task: ScheduledTask) {
         console.error('[handleTask] task', task.id, 'failed with error:', err)
         console.error('[handleTask] task args were:', JSON.stringify(task.args, null, 2))
         useHostStore.getState().updateScheduledTask(task.id, {
-            isRunning: false,
-            currentRunId: undefined,
             lastRunError: err instanceof Error ? err.message : 'Unknown error',
         })
     } finally {

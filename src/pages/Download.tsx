@@ -207,7 +207,11 @@ export default function Download() {
                     setIsFetchingDownloadData(false)
                 })
             })
-            .catch()
+            .catch(() => {
+                startTransition(() => {
+                    setIsFetchingDownloadData(false)
+                })
+            })
 
         return () => {
             abortController.abort()

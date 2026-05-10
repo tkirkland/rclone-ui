@@ -468,15 +468,15 @@ export default function Bisync() {
                         startTransition(() => {
                             if (shouldMerge) {
                                 if (groupedOptions.copy)
-                                    setBisyncOptions({ ...bisyncOptions, ...groupedOptions.copy })
+                                    setBisyncOptionsJsonString(JSON.stringify({ ...bisyncOptions, ...groupedOptions.copy }, null, 2))
                                 if (groupedOptions.filter)
-                                    setFilterOptions({ ...filterOptions, ...groupedOptions.filter })
+                                    setFilterOptionsJsonString(JSON.stringify({ ...filterOptions, ...groupedOptions.filter }, null, 2))
                                 if (groupedOptions.config)
-                                    setConfigOptions({ ...configOptions, ...groupedOptions.config })
+                                    setConfigOptionsJsonString(JSON.stringify({ ...configOptions, ...groupedOptions.config }, null, 2))
                             } else {
-                                if (groupedOptions.copy) setBisyncOptions(groupedOptions.copy)
-                                if (groupedOptions.filter) setFilterOptions(groupedOptions.filter)
-                                if (groupedOptions.config) setConfigOptions(groupedOptions.config)
+                                if (groupedOptions.copy) setBisyncOptionsJsonString(JSON.stringify(groupedOptions.copy, null, 2))
+                                if (groupedOptions.filter) setFilterOptionsJsonString(JSON.stringify(groupedOptions.filter, null, 2))
+                                if (groupedOptions.config) setConfigOptionsJsonString(JSON.stringify(groupedOptions.config, null, 2))
                             }
                         })
                     }}

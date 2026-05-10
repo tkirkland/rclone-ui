@@ -6,6 +6,8 @@ const RE_LOCAL_WINDOWS_PATH = /^:local:([a-zA-Z]:\/?.*)$/
 const RE_PATH_SEPARATOR = /[/\\]/
 
 export function formatBytes(bytes: number) {
+    if (!Number.isFinite(bytes)) return '0 B'
+
     if (bytes < 1024) {
         return `${Math.round(bytes)} B`
     }

@@ -142,7 +142,7 @@ interface PersistedStateV2 {
 const getStorage = (store: LazyStore): StateStorage => ({
     getItem: async (name: string): Promise<string | null> => {
         console.log('getItem', { name })
-        return (await store.get(name)) || null
+        return (await store.get(name)) ?? null
     },
     setItem: async (name: string, value: string): Promise<void> => {
         console.log('setItem', { name, value })

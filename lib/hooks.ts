@@ -50,18 +50,16 @@ export function useFlags() {
 
     const serveFlags = SERVE_TYPES.reduce(
         (acc, type) => {
-            acc[type] =
-                allFlags?.[type] ||
-                []
-                    .map((flag: any) => ({
-                        ...flag,
-                        FieldName: flag.Name,
-                        DefaultStr:
-                            flag.Name === 'addr'
-                                ? flag.DefaultStr.replace('[', '').replace(']', '')
-                                : flag.DefaultStr,
-                    }))
-                    .sort((a: any, b: any) => a.Name.localeCompare(b.Name))
+            acc[type] = (allFlags?.[type] || [])
+                .map((flag: any) => ({
+                    ...flag,
+                    FieldName: flag.Name,
+                    DefaultStr:
+                        flag.Name === 'addr'
+                            ? flag.DefaultStr.replace('[', '').replace(']', '')
+                            : flag.DefaultStr,
+                }))
+                .sort((a: any, b: any) => a.Name.localeCompare(b.Name))
             return acc
         },
         {} as Record<(typeof SERVE_TYPES)[number], any[]>

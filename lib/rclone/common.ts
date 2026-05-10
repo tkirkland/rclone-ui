@@ -231,15 +231,13 @@ export function parseRcloneVersion(output: string) {
 }
 
 export function shouldUpdateRclone(versionData: { yours: string; latest: string } | null) {
-    if (!versionData?.yours) return false
-
     if (!versionData) {
         console.warn('[shouldUpdateRclone] received no version data:', versionData)
         return false
     }
 
-    const currentVersion = versionData.yours
-    const latestVersion = versionData.latest
+    const currentVersion = versionData?.yours
+    const latestVersion = versionData?.latest
 
     if (!currentVersion || !latestVersion) {
         console.warn('[shouldUpdateRclone] could not parse version output:', versionData)
@@ -249,8 +247,8 @@ export function shouldUpdateRclone(versionData: { yours: string; latest: string 
     console.log('[shouldUpdateRclone] current version:', currentVersion)
     console.log('[shouldUpdateRclone] latest version:', latestVersion)
 
-    if (useHostStore.getState().lastSkippedVersion === currentVersion) {
-        console.log('[shouldUpdateRclone] current version is in the lastSkippedVersion')
+    if (useHostStore.getState().lastSkippedVersion === latestVersion) {
+        console.log('[shouldUpdateRclone] latest version is in the lastSkippedVersion')
         return false
     }
 

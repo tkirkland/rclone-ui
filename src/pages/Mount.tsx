@@ -308,18 +308,18 @@ export default function Mount() {
                         startTransition(() => {
                             if (shouldMerge) {
                                 if (groupedOptions.mount)
-                                    setMountOptions({ ...mountOptions, ...groupedOptions.mount })
+                                    setMountOptionsJsonString(JSON.stringify({ ...mountOptions, ...groupedOptions.mount }, null, 2))
                                 if (groupedOptions.vfs)
-                                    setVfsOptions({ ...vfsOptions, ...groupedOptions.vfs })
+                                    setVfsOptionsJsonString(JSON.stringify({ ...vfsOptions, ...groupedOptions.vfs }, null, 2))
                                 if (groupedOptions.filter)
-                                    setFilterOptions({ ...filterOptions, ...groupedOptions.filter })
+                                    setFilterOptionsJsonString(JSON.stringify({ ...filterOptions, ...groupedOptions.filter }, null, 2))
                                 if (groupedOptions.config)
-                                    setConfigOptions({ ...configOptions, ...groupedOptions.config })
+                                    setConfigOptionsJsonString(JSON.stringify({ ...configOptions, ...groupedOptions.config }, null, 2))
                             } else {
-                                if (groupedOptions.mount) setMountOptions(groupedOptions.mount)
-                                if (groupedOptions.vfs) setVfsOptions(groupedOptions.vfs)
-                                if (groupedOptions.filter) setFilterOptions(groupedOptions.filter)
-                                if (groupedOptions.config) setConfigOptions(groupedOptions.config)
+                                if (groupedOptions.mount) setMountOptionsJsonString(JSON.stringify(groupedOptions.mount, null, 2))
+                                if (groupedOptions.vfs) setVfsOptionsJsonString(JSON.stringify(groupedOptions.vfs, null, 2))
+                                if (groupedOptions.filter) setFilterOptionsJsonString(JSON.stringify(groupedOptions.filter, null, 2))
+                                if (groupedOptions.config) setConfigOptionsJsonString(JSON.stringify(groupedOptions.config, null, 2))
                             }
                         })
                     }}

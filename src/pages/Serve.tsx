@@ -290,22 +290,19 @@ export default function Serve() {
                         startTransition(() => {
                             if (shouldMerge) {
                                 if (groupedOptions.serve && type)
-                                    setServeOptions({
-                                        ...serveOptions,
-                                        ...groupedOptions.serve[type],
-                                    })
+                                    setServeOptionsJsonString(JSON.stringify({ ...serveOptions, ...groupedOptions.serve[type] }, null, 2))
                                 if (groupedOptions.vfs)
-                                    setVfsOptions({ ...vfsOptions, ...groupedOptions.vfs })
+                                    setVfsOptionsJsonString(JSON.stringify({ ...vfsOptions, ...groupedOptions.vfs }, null, 2))
                                 if (groupedOptions.filter)
-                                    setFilterOptions({ ...filterOptions, ...groupedOptions.filter })
+                                    setFilterOptionsJsonString(JSON.stringify({ ...filterOptions, ...groupedOptions.filter }, null, 2))
                                 if (groupedOptions.config)
-                                    setConfigOptions({ ...configOptions, ...groupedOptions.config })
+                                    setConfigOptionsJsonString(JSON.stringify({ ...configOptions, ...groupedOptions.config }, null, 2))
                             } else {
                                 if (groupedOptions.serve && type)
-                                    setServeOptions(groupedOptions.serve[type])
-                                if (groupedOptions.vfs) setVfsOptions(groupedOptions.vfs)
-                                if (groupedOptions.filter) setFilterOptions(groupedOptions.filter)
-                                if (groupedOptions.config) setConfigOptions(groupedOptions.config)
+                                    setServeOptionsJsonString(JSON.stringify(groupedOptions.serve[type], null, 2))
+                                if (groupedOptions.vfs) setVfsOptionsJsonString(JSON.stringify(groupedOptions.vfs, null, 2))
+                                if (groupedOptions.filter) setFilterOptionsJsonString(JSON.stringify(groupedOptions.filter, null, 2))
+                                if (groupedOptions.config) setConfigOptionsJsonString(JSON.stringify(groupedOptions.config, null, 2))
                             }
                         })
                     }}
