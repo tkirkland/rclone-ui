@@ -489,8 +489,10 @@ function ConfigCard({
     locateConfigMutation: any
     exportConfigMutation: any
 }) {
+    const isActive = configFile.id === activeConfigFile?.id
+
     const disabledKeys = useMemo(() => {
-        if (configFile.id !== activeConfigFile?.id) {
+        if (!isActive) {
             return [
                 'enable',
                 'disable',
@@ -522,7 +524,7 @@ function ConfigCard({
         }
 
         return disabled
-    }, [configFile, activeConfigFile])
+    }, [configFile, isActive])
 
     return (
         <Card
@@ -676,81 +678,70 @@ function ConfigCard({
                             </Dropdown>
                         </div>
                     </Tooltip>
-                    <Tooltip content="Edit Config" color="foreground" size="lg">
-                        <div>
-                            <Button
-                                isIconOnly={true}
-                                variant="light"
-                                size="lg"
-                                onPress={() => {
-                                    setFocusedConfigId(configFile.id!)
-                                    setIsEditDrawerOpen(true)
-                                }}
-                                isDisabled={
-                                    configFile.id === 'default' ||
-                                    configFile.id === activeConfigFile?.id ||
-                                    Boolean(configFile.sync)
-                                }
-                            >
-                                <PencilIcon className="w-5 h-5" />
-                            </Button>
-                        </div>
-                    </Tooltip>
-                    <Tooltip content="Delete Config" color="danger" size="lg">
-                        <div>
-                            <Button
-                                isIconOnly={true}
-                                variant="light"
-                                size="lg"
-                                onPress={() => {
-                                    setTimeout(async () => {
-                                        const confirmed = await ask(
-                                            `Are you sure you want to delete config ${configFile.label}?`,
-                                            {
-                                                title: 'Delete Config',
-                                                kind: 'warning',
-                                                okLabel: 'Delete',
-                                                cancelLabel: 'Cancel',
+                    {configFile.id !== 'default' && !isActive && !configFile.sync && (
+                        <Tooltip content="Edit Config" color="foreground" size="lg">
+                            <div>
+                                <Button
+                                    isIconOnly={true}
+                                    variant="light"
+                                    size="lg"
+                                    onPress={() => {
+                                        setFocusedConfigId(configFile.id!)
+                                        setIsEditDrawerOpen(true)
+                                    }}
+                                >
+                                    <PencilIcon className="w-5 h-5" />
+                                </Button>
+                            </div>
+                        </Tooltip>
+                    )}
+                    {configFile.id !== 'default' && (
+                        <Tooltip content="Delete Config" color="danger" size="lg">
+                            <div>
+                                <Button
+                                    isIconOnly={true}
+                                    variant="light"
+                                    size="lg"
+                                    onPress={() => {
+                                        setTimeout(async () => {
+                                            const confirmed = await ask(
+                                                `Are you sure you want to delete config ${configFile.label}?`,
+                                                {
+                                                    title: 'Delete Config',
+                                                    kind: 'warning',
+                                                    okLabel: 'Delete',
+                                                    cancelLabel: 'Cancel',
+                                                }
+                                            )
+
+                                            if (!confirmed) {
+                                                return
                                             }
-                                        )
 
-                                        if (!confirmed) {
-                                            return
-                                        }
+                                            if (!configFile.sync) {
+                                                const path = await getConfigPath({
+                                                    id: configFile.id!,
+                                                    validate: true,
+                                                })
 
-                                        if (configFile.id === 'default') {
-                                            await message('Default config cannot be deleted', {
-                                                title: 'Error',
-                                                kind: 'warning',
-                                                okLabel: 'OK',
-                                            })
-                                            return
-                                        }
+                                                await remove(path.replace('rclone.conf', ''), {
+                                                    recursive: true,
+                                                })
+                                            }
 
-                                        if (!configFile.sync) {
-                                            const path = await getConfigPath({
-                                                id: configFile.id!,
-                                                validate: true,
-                                            })
+                                            if (activeConfigFile?.id === configFile.id) {
+                                                useHostStore.getState().setActiveConfigFile('default')
+                                            }
 
-                                            await remove(path.replace('rclone.conf', ''), {
-                                                recursive: true,
-                                            })
-                                        }
-
-                                        if (activeConfigFile?.id === configFile.id) {
-                                            useHostStore.getState().setActiveConfigFile('default')
-                                        }
-
-                                        useHostStore.getState().removeConfigFile(configFile.id!)
-                                    }, 100)
-                                }}
-                                isDisabled={configFile.id === 'default'}
-                            >
-                                <Trash2Icon className="w-5 h-5" />
-                            </Button>
-                        </div>
-                    </Tooltip>
+                                            useHostStore.getState().removeConfigFile(configFile.id!)
+                                        }, 100)
+                                    }}
+                                >
+                                    <Trash2Icon className="w-5 h-5" />
+                                </Button>
+                            </div>
+                        </Tooltip>
+                    )}
                     <Tooltip content="Locate Config" color="foreground" size="lg">
                         <div>
                             <Button
