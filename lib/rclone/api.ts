@@ -790,6 +790,7 @@ export async function startMount({
                             const mp = dstFullDirPath
                                 .replace(':local:', '')
                                 .replace(RE_BACKSLASH, '/')
+                                .replace(/\/+/g, '/')
                             if (/^[a-zA-Z]:\/$/.test(mp)) {
                                 return mp.slice(0, -1)
                             }
