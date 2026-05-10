@@ -1074,7 +1074,7 @@ async function checkRclone() {
     }))
 }
 
-getCurrentWindow().listen('tauri://close-requested', async (e) => {
+getCurrentWindow().listen('tauri://close-requested', async () => {
     console.log('(main) window close requested')
     await getCurrentWindow().destroy()
 })
