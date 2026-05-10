@@ -644,7 +644,7 @@ export async function startMount({
             : undefined
 
     if (destination === '*' && currentPlatform === 'windows') {
-        await pRetry(
+        const response = await pRetry(
             async () =>
                 await rclone('/mount/mount', {
                     params: {
@@ -662,7 +662,7 @@ export async function startMount({
                 retries: 3,
             }
         )
-        return
+        return response?.mountPoint as string | undefined
     }
 
     const {

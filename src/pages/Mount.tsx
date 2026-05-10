@@ -116,7 +116,7 @@ export default function Mount() {
         mutationFn: async ({ dest, source }: { dest?: string; source?: string }) => {
             if (!dest || !source) throw new Error('Destination and source are required')
 
-            await startMount({
+            const resolvedMountPoint = await startMount({
                 source: source,
                 destination: dest,
                 options: {
@@ -127,7 +127,7 @@ export default function Mount() {
                 },
             })
 
-            return dest
+            return resolvedMountPoint || dest
         },
         onSuccess: async () => {
             if (usePersistedStore.getState().acknowledgements.includes('firstMount')) {
@@ -428,12 +428,13 @@ export default function Mount() {
                                 size="lg"
                                 color="primary"
                                 onPress={async () => {
-                                    if (!dest) return
+                                    const mountPoint = startMountMutation.data
+                                    if (!mountPoint) return
                                     try {
-                                        await openPath(dest)
+                                        await openPath(mountPoint)
                                     } catch (err) {
                                         console.error('[Mount] Error opening path:', err)
-                                        await message(`Failed to open ${dest} (${err})`, {
+                                        await message(`Failed to open ${mountPoint} (${err})`, {
                                             title: 'Open Error',
                                             kind: 'error',
                                         })
