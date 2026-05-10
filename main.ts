@@ -395,7 +395,7 @@ async function registerRcloneWindowListeners() {
     rcloneListenersRegistered = true
 }
 
-async function startRclone(): Promise<boolean> {
+async function startRclone() {
     console.log('[startRclone]')
 
     await registerRcloneWindowListeners()
@@ -430,8 +430,7 @@ async function startRclone(): Promise<boolean> {
                 okLabel: 'Exit',
             }
         )
-        await exit(0)
-        return false
+        return await exit(0)
     }
 
     const command = rclone?.system || rclone?.internal
@@ -439,7 +438,7 @@ async function startRclone(): Promise<boolean> {
     if (!command) {
         console.error('[startRclone] initRclone returned without a runnable command')
         Sentry.captureException(new Error('initRclone returned without a runnable command.'))
-        return false
+        return
     }
 
     command.addListener('close', async (event) => {
@@ -477,7 +476,6 @@ async function startRclone(): Promise<boolean> {
     console.log('[startRclone] running rclone')
 
     await new Promise((resolve) => setTimeout(resolve, 500))
-    return true
 }
 
 async function startupMounts() {
@@ -1120,16 +1118,10 @@ waitForHydration()
     .then(() => validateInstance())
     .then(() => checkAlreadyRunning())
     .then(() => startRclone())
-    .then(async (started) => {
-        if (!started) {
-            console.log('[main] rclone did not start, leaving startup window visible')
-            return
-        }
-        await checkRclone()
-        await handleDeepLink()
-        await showStartup()
-        await startupMounts()
-        await resumeTasks()
-        await initTray()
-    })
+    .then(() => checkRclone())
+    .then(() => handleDeepLink())
+    .then(() => showStartup())
+    .then(() => startupMounts())
+    .then(() => resumeTasks())
+    .then(() => initTray())
     .catch(console.error)
