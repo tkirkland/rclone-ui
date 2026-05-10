@@ -12,6 +12,7 @@ import { type ResolvedToolbarResult, runToolbarEngine } from '../../toolbar/engi
 
 const toolbarWindow = getCurrentWebviewWindow()
 const isWindows = platform() === 'windows'
+const isLinux = platform() === 'linux'
 
 const ELEMENT_ID_REGEX = /[^a-zA-Z0-9_-]/g
 
@@ -462,7 +463,7 @@ export default function Toolbar() {
     }, [highlightedIndex, engineResults])
 
     return (
-        <div className="flex flex-col items-center justify-center w-full h-full">
+        <div className="flex flex-col items-center justify-center w-full h-screen pb-[15vh]">
             <div
                 ref={activeAreaRef}
                 className="flex border-divider border flex-col items-center justify-center bg-content2/[0.97] w-[700px] rounded-large"
@@ -479,7 +480,7 @@ export default function Toolbar() {
                     />
                     <input
                         ref={inputRef}
-                        data-tauri-drag-region={true}
+                        data-tauri-drag-region={!isLinux}
                         autoCapitalize="off"
                         autoComplete="off"
                         autoCorrect="off"
