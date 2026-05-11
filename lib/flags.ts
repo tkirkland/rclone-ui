@@ -110,7 +110,7 @@ export function groupByCategory(
         const category = getFlagCategory(k, allFlags)
         if (!category) continue
         if (category.category.startsWith('serve.')) {
-            const serveType = category.category.slice(5) as (typeof SERVE_TYPES)[number]
+            const serveType = category.category.slice(6) as (typeof SERVE_TYPES)[number]
             collectedFlags.serve[serveType] = {
                 ...collectedFlags.serve[serveType],
                 [k]: v,

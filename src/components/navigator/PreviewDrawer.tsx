@@ -78,11 +78,14 @@ export default function PreviewDrawer({
             return
         }
 
+        const abortController = new AbortController()
+
         setIsLoadingText(true)
         setTextError(null)
 
         fetch(previewUrl, {
             headers: auth ? { Authorization: `Basic ${auth}` } : undefined,
+            signal: abortController.signal,
         })
             .then((res) => {
                 if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -93,9 +96,12 @@ export default function PreviewDrawer({
                 setIsLoadingText(false)
             })
             .catch((err: Error) => {
+                if (abortController.signal.aborted) return
                 setTextError(err.message)
                 setIsLoadingText(false)
             })
+
+        return () => abortController.abort()
     }, [item, fileType, previewUrl, auth, isTooLarge])
 
     const handleDownload = useCallback(() => {

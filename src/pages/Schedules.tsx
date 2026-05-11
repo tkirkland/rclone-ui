@@ -69,8 +69,10 @@ function TaskCard({
         }
     }, [task.name, isEditingName])
 
-    const parsed = useMemo(() => CronExpressionParser.parse(task.cron), [task.cron])
-    const nextRun = useMemo(() => (parsed.hasNext() ? parsed.next().toDate() : null), [parsed])
+    const nextRun = useMemo(() => {
+        const parsed = CronExpressionParser.parse(task.cron)
+        return parsed.hasNext() ? parsed.next().toDate() : null
+    }, [task.cron])
 
     const source = useMemo(
         () => ('source' in task.args ? task.args.source : task.args.sources[0]),

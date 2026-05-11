@@ -644,7 +644,7 @@ export async function startMount({
             : undefined
 
     if (destination === '*' && currentPlatform === 'windows') {
-        await pRetry(
+        const response = await pRetry(
             async () =>
                 await rclone('/mount/mount', {
                     params: {
@@ -662,7 +662,7 @@ export async function startMount({
                 retries: 3,
             }
         )
-        return
+        return response?.mountPoint as string | undefined
     }
 
     const {
@@ -790,6 +790,7 @@ export async function startMount({
                             const mp = dstFullDirPath
                                 .replace(':local:', '')
                                 .replace(RE_BACKSLASH, '/')
+                                .replace(/\/+/g, '/')
                             if (/^[a-zA-Z]:\/$/.test(mp)) {
                                 return mp.slice(0, -1)
                             }
@@ -892,7 +893,7 @@ export async function startBisync({
         {
             retries: 3,
         }
-    ).catch(null)
+    ).catch(() => null)
 
     console.log('jobStatus', JSON.stringify(jobStatus, null, 2))
 
@@ -988,7 +989,7 @@ export async function startSync({
         {
             retries: 3,
         }
-    ).catch(null)
+    ).catch(() => null)
 
     console.log('jobStatus', JSON.stringify(jobStatus, null, 2))
 
@@ -1229,7 +1230,7 @@ export async function startBatch(inputs: ({ _path: string } & Record<string, any
         {
             retries: 3,
         }
-    ).catch(null)
+    ).catch(() => null)
 
     console.log('[startBatch] jobStatus', {
         jobid: r.jobid,

@@ -230,9 +230,9 @@ export default function Purge() {
                         startTransition(() => {
                             if (shouldMerge) {
                                 if (groupedOptions.config)
-                                    setConfigOptions({ ...configOptions, ...groupedOptions.config })
+                                    setConfigOptionsJsonString(JSON.stringify({ ...configOptions, ...groupedOptions.config }, null, 2))
                             } else if (groupedOptions.config)
-                                setConfigOptions(groupedOptions.config)
+                                setConfigOptionsJsonString(JSON.stringify(groupedOptions.config, null, 2))
                         })
                     }}
                     getOptions={() => ({

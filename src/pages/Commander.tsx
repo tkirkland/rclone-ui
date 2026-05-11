@@ -67,20 +67,6 @@ export default function Browser() {
     const [trackedJobIds, setTrackedJobIds] = useState<Set<number>>(new Set())
 
     const handleJobStarted = useCallback((jobId: number) => {
-        // #region agent log
-        fetch('http://127.0.0.1:7250/ingest/2834749a-e80b-4040-ad02-08316d12b97e', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                location: 'Commander.tsx:handleJobStarted',
-                message: 'handleJobStarted called',
-                data: { jobId },
-                timestamp: Date.now(),
-                sessionId: 'debug-session',
-                hypothesisId: 'G',
-            }),
-        }).catch(() => {})
-        // #endregion
         setTrackedJobIds((prev) => new Set([...prev, jobId]))
     }, [])
 
@@ -206,91 +192,85 @@ export default function Browser() {
         setContextMenu(null)
     }, [])
 
-    const handleDelete = useCallback(
-        async (entry: Entry) => {
-            const confirmed = await ask(
-                `Are you sure you want to delete "${entry.name}"?`,
-                { title: 'Confirm Delete', kind: 'warning' }
-            )
-            if (!confirmed) return
+    const handleDelete = useCallback(async (entry: Entry) => {
+        const confirmed = await ask(`Are you sure you want to delete "${entry.name}"?`, {
+            title: 'Confirm Delete',
+            kind: 'warning',
+        })
+        if (!confirmed) return
 
-            try {
-                const source = entry.fullPath + (entry.isDir ? '/' : '')
-                const info = getFsInfo(source)
-                const endpoint = entry.isDir ? '/operations/purge' : '/operations/deletefile'
+        try {
+            const source = entry.fullPath + (entry.isDir ? '/' : '')
+            const info = getFsInfo(source)
+            const endpoint = entry.isDir ? '/operations/purge' : '/operations/deletefile'
 
-                await rclone(endpoint as any, {
+            await rclone(endpoint as any, {
+                params: {
+                    query: {
+                        fs: info.root,
+                        remote: info.filePath,
+                    },
+                },
+            })
+
+            leftPanelRef.current?.refresh()
+            rightPanelRef.current?.refresh()
+        } catch (error) {
+            await message(error instanceof Error ? error.message : 'Delete failed', {
+                title: 'Error',
+                kind: 'error',
+            })
+        }
+    }, [])
+
+    const handleRename = useCallback(async (entry: Entry) => {
+        const newName = await invoke<string | null>('prompt', {
+            title: 'Rename',
+            message: `Enter a new name for "${entry.name}"`,
+            default: entry.name,
+            sensitive: false,
+        })
+        if (!newName || newName === entry.name) return
+
+        try {
+            const info = getFsInfo(entry.fullPath)
+            const parentDir = info.filePath.includes('/')
+                ? info.filePath.slice(0, info.filePath.lastIndexOf('/') + 1)
+                : ''
+            const dstRemote = `${parentDir}${newName}`
+
+            if (entry.isDir) {
+                await rclone('/sync/move' as any, {
                     params: {
                         query: {
-                            fs: info.root,
-                            remote: info.filePath,
+                            srcFs: `${info.root}${info.filePath}/`,
+                            dstFs: `${info.root}${dstRemote}/`,
+                            deleteEmptySrcDirs: true,
                         },
                     },
                 })
-
-                leftPanelRef.current?.refresh()
-                rightPanelRef.current?.refresh()
-            } catch (error) {
-                await message(error instanceof Error ? error.message : 'Delete failed', {
-                    title: 'Error',
-                    kind: 'error',
+            } else {
+                await rclone('/operations/movefile' as any, {
+                    params: {
+                        query: {
+                            srcFs: info.root,
+                            srcRemote: info.filePath,
+                            dstFs: info.root,
+                            dstRemote,
+                        },
+                    },
                 })
             }
-        },
-        []
-    )
 
-    const handleRename = useCallback(
-        async (entry: Entry) => {
-            const newName = await invoke<string | null>('prompt', {
-                title: 'Rename',
-                message: `Enter a new name for "${entry.name}"`,
-                default: entry.name,
-                sensitive: false,
+            leftPanelRef.current?.refresh()
+            rightPanelRef.current?.refresh()
+        } catch (error) {
+            await message(error instanceof Error ? error.message : 'Rename failed', {
+                title: 'Error',
+                kind: 'error',
             })
-            if (!newName || newName === entry.name) return
-
-            try {
-                const info = getFsInfo(entry.fullPath)
-                const parentDir = info.filePath.includes('/')
-                    ? info.filePath.slice(0, info.filePath.lastIndexOf('/') + 1)
-                    : ''
-                const dstRemote = `${parentDir}${newName}`
-
-                if (entry.isDir) {
-                    await rclone('/sync/move' as any, {
-                        params: {
-                            query: {
-                                srcFs: `${info.root}${info.filePath}/`,
-                                dstFs: `${info.root}${dstRemote}/`,
-                                deleteEmptySrcDirs: true,
-                            },
-                        },
-                    })
-                } else {
-                    await rclone('/operations/movefile' as any, {
-                        params: {
-                            query: {
-                                srcFs: info.root,
-                                srcRemote: info.filePath,
-                                dstFs: info.root,
-                                dstRemote,
-                            },
-                        },
-                    })
-                }
-
-                leftPanelRef.current?.refresh()
-                rightPanelRef.current?.refresh()
-            } catch (error) {
-                await message(error instanceof Error ? error.message : 'Rename failed', {
-                    title: 'Error',
-                    kind: 'error',
-                })
-            }
-        },
-        []
-    )
+        }
+    }, [])
 
     const handleCreateFolder = useCallback(
         async (panelSide: 'left' | 'right') => {
@@ -518,21 +498,6 @@ export default function Browser() {
 function TransfersBar({ trackedJobIds }: { trackedJobIds: Set<number> }) {
     const [isExpanded, setIsExpanded] = useState(false)
     const jobIds = Array.from(trackedJobIds)
-
-    // #region agent log
-    fetch('http://127.0.0.1:7250/ingest/2834749a-e80b-4040-ad02-08316d12b97e', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            location: 'Commander.tsx:TransfersBar:render',
-            message: 'TransfersBar rendering',
-            data: { jobIdsCount: jobIds.length, jobIds },
-            timestamp: Date.now(),
-            sessionId: 'debug-session',
-            hypothesisId: 'G,H',
-        }),
-    }).catch(() => {})
-    // #endregion
 
     const itemsQuery = useQuery({
         queryKey: ['transfers', 'items', jobIds],

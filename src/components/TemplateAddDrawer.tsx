@@ -186,7 +186,7 @@ export default function TemplateAddDrawer({
                 const parsedNumber = Number(v)
                 if (!isNaN(parsedNumber)) v = parsedNumber
 
-                if (value.includes(',')) v = value.split(',')
+                if (value?.includes(',')) v = value.split(',')
 
                 flagGroups[flag.trim()] = v
             }

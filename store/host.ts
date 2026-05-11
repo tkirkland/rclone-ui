@@ -34,9 +34,9 @@ export async function initHostStore(hostId: string) {
     }
 
     try {
-        disposeKeyChange = activeStore.onKeyChange('host-store', async () => {
+        disposeKeyChange = await activeStore.onKeyChange('host-store', async () => {
             await useHostStore.persist.rehydrate()
-        }) as unknown as () => void
+        })
     } catch (err) {
         console.error('[HostStore] failed to register onKeyChange listener', err)
     }
@@ -49,7 +49,7 @@ const getStorage = (): StateStorage => ({
     getItem: async (name: string): Promise<string | null> => {
         if (!activeStore) return null
         // console.log('[HostStore] getItem', { name, host: activeHostId })
-        return (await activeStore.get(name)) || null
+        return (await activeStore.get(name)) ?? null
     },
     setItem: async (name: string, value: string): Promise<void> => {
         if (!activeStore) return

@@ -59,17 +59,6 @@ export default function Transfers() {
         [transfersQuery.data]
     )
 
-    console.log('[Transfers] query state', {
-        isLoading: transfersQuery.isLoading,
-        isRefetching: transfersQuery.isRefetching,
-        isError: transfersQuery.isError,
-        error: transfersQuery.error,
-        activeCount: transfers.active.length,
-        inactiveCount: transfers.inactive.length,
-        // checkingJobs: transfers.active.filter((j) => j.isChecking).length,
-    })
-    console.log('[Transfers] data', JSON.stringify(transfers, null, 2))
-
     if (transfersQuery.isLoading) {
         return (
             <div className="flex flex-col items-center justify-center h-screen">

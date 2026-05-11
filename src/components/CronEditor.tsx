@@ -2,7 +2,7 @@ import { Button, Input, Select, SelectItem } from '@heroui/react'
 import cronstrue from 'cronstrue'
 import { ClockIcon, XIcon } from 'lucide-react'
 import type React from 'react'
-import { startTransition, useCallback, useEffect, useMemo, useState } from 'react'
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 interface CronEditorProps {
     expression: string | null
@@ -51,7 +51,12 @@ export default function CronEditor({ expression, onChange }: CronEditorProps) {
         [cronExpression]
     )
 
+    const hasMounted = useRef(false)
     useEffect(() => {
+        if (!hasMounted.current) {
+            hasMounted.current = true
+            return
+        }
         onChange(cronExpression)
     }, [cronExpression, onChange])
 

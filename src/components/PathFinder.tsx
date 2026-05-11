@@ -264,10 +264,11 @@ export function PathField({
                     if (!item) {
                         return
                     }
-                    item.type === 'folder' && !item.path.endsWith('/') && !item.path.endsWith('\\')
-                        ? `${item.path}${sep()}`
-                        : item.path
-                    setPath(item.path)
+                    setPath(
+                        item.type === 'folder' && !item.path.endsWith('/') && !item.path.endsWith('\\')
+                            ? `${item.path}${sep()}`
+                            : item.path
+                    )
                 }}
                 isOpen={isOpen}
                 initialPaths={path ? [path] : []}

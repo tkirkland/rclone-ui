@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import { ask } from '@tauri-apps/plugin-dialog'
+import { platform } from '@tauri-apps/plugin-os'
 import { exit } from '@tauri-apps/plugin-process'
 import { LazyStore } from '@tauri-apps/plugin-store'
 import { create } from 'zustand'
@@ -134,7 +135,7 @@ interface PersistedStateV2 {
     acknowledgements: string[]
 
     appearance: {
-        tray: 'light' | 'dark' | 'system'
+        tray: 'light' | 'dark' | 'system' | 'color'
         app: 'light' | 'dark' | 'system'
     }
 }
@@ -142,7 +143,7 @@ interface PersistedStateV2 {
 const getStorage = (store: LazyStore): StateStorage => ({
     getItem: async (name: string): Promise<string | null> => {
         console.log('getItem', { name })
-        return (await store.get(name)) || null
+        return (await store.get(name)) ?? null
     },
     setItem: async (name: string, value: string): Promise<void> => {
         console.log('setItem', { name, value })
@@ -212,7 +213,7 @@ export const usePersistedStore = create<PersistedStateV2>()(
             acknowledgements: [],
 
             appearance: {
-                tray: 'system',
+                tray: platform() === 'linux' ? 'color' : 'system',
                 app: 'dark',
             },
         }),

@@ -96,6 +96,7 @@ pub async fn open_full_window(
     Ok(())
 }
 
+#[cfg(not(target_os = "linux"))]
 #[tauri::command]
 pub async fn open_window(
     app_handle: AppHandle,
@@ -108,7 +109,7 @@ pub async fn open_window(
         existing.set_focus().map_err(|e| e.to_string())?;
         return Ok(());
     }
-	
+
 	let os = std::env::consts::OS;
 
     let default_height = if os == "windows" { 755.0 } else { 725.0 };
@@ -133,10 +134,9 @@ pub async fn open_window(
     }
 
     let window = builder.build().map_err(|e| e.to_string())?;
-	
+
 	std::thread::sleep(std::time::Duration::from_millis(750));
 
-    // window.center().map_err(|e| e.to_string())?;
     let monitor = window
         .current_monitor()
         .map_err(|e| e.to_string())?
@@ -161,18 +161,51 @@ pub async fn open_window(
             y: y + final_offset,
         }))
         .map_err(|e| e.to_string())?;
-		
+
     window.set_zoom(1.0).map_err(|e| e.to_string())?;
     window.show().map_err(|e| e.to_string())?;
     window.set_focus().map_err(|e| e.to_string())?;
-	
-	#[cfg(target_os = "linux")]
-	window
-		.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
-			x: x + final_offset,
-			y: y + final_offset,
-		}))
-		.map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[tauri::command]
+pub async fn open_window(
+    app_handle: AppHandle,
+    name: String,
+    url: String,
+    width: Option<f64>,
+    height: Option<f64>,
+) -> Result<(), String> {
+    if let Some(existing) = app_handle.get_webview_window(&name) {
+        existing.set_focus().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    let width = width.unwrap_or(840.0);
+    let height = height.unwrap_or(725.0);
+
+    let builder = WebviewWindowBuilder::new(&app_handle, &name, WebviewUrl::App(url.into()))
+        .title(&name)
+        .inner_size(width, height)
+        .min_inner_size(700.0, 700.0)
+        .max_inner_size(1000.0, 1000.0)
+        .resizable(true)
+        .visible(false)
+        .focused(false)
+        .decorations(true)
+        .zoom_hotkeys_enabled(false);
+
+    let window = builder.build().map_err(|e| e.to_string())?;
+
+    window.center().map_err(|e| e.to_string())?;
+    window.set_zoom(1.0).map_err(|e| e.to_string())?;
+    window.show().map_err(|e| e.to_string())?;
+    window.set_focus().map_err(|e| e.to_string())?;
+
+    window.set_resizable(false).map_err(|e| e.to_string())?;
+    window.set_resizable(true).map_err(|e| e.to_string())?;
 
     Ok(())
 }

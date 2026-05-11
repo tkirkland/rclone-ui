@@ -63,7 +63,7 @@ fn create_toolbar_window(app_handle: &AppHandle) -> Result<WebviewWindow, tauri:
         let logical_position = physical_position.to_logical::<f64>(scale_factor);
 
         let pos_x = logical_position.x;
-        let pos_y = logical_position.y + (logical_size.height / 4.0);
+        let pos_y = logical_position.y;
 
         let mut b = WebviewWindowBuilder::new(
             app_handle,

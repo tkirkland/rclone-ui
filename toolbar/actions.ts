@@ -314,10 +314,12 @@ const actions: ToolbarActionDefinition[] = [
                 }
             }
 
-            if (paths.length === 0) {
+            const queryIsOnlyKeyword = !query || matchesKeyword(query, COMMAND_KEYWORDS.mount) && query.trim().split(/\s+/).length <= 1
+
+            if (paths.length === 0 || queryIsOnlyKeyword) {
                 results.push(createBaseResult('Mount', COMMAND_DESCRIPTIONS.mount, {}, 42))
             } else {
-                for (const path of paths) {
+                for (const path of paths.slice(0, 40)) {
                     const score = path.isLocal ? 140 : 160
                     results.push(
                         createBaseResult(
@@ -491,12 +493,14 @@ const actions: ToolbarActionDefinition[] = [
                 }
             }
 
-            if (paths.length === 0) {
+            const queryIsOnlyKeyword = !query || matchesKeyword(query, COMMAND_KEYWORDS.serve) && query.trim().split(/\s+/).length <= 1
+
+            if (paths.length === 0 || queryIsOnlyKeyword) {
                 results.push(createBaseResult('Serve', COMMAND_DESCRIPTIONS.serve, {}, 40))
             } else {
                 const protocol = findServeType(query)
 
-                for (const path of paths) {
+                for (const path of paths.slice(0, 40)) {
                     const args: ToolbarActionArgs = protocol
                         ? { initialSource: normalizePathForArgs(path), initialType: protocol }
                         : { initialSource: normalizePathForArgs(path) }

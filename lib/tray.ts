@@ -165,7 +165,9 @@ async function resolveTrayIconForTheme() {
     const existingTheme = usePersistedStore.getState().appearance
     console.log('[resolveTrayIconForTheme] existingTheme', existingTheme)
 
-    const isLinux = platform() === 'linux'
+    if (existingTheme.tray === 'color') {
+        return await resolveResource('icons/favicon/icon-color.png')
+    }
 
     if (existingTheme.tray === 'system') {
         if (platform() === 'macos') {
@@ -178,9 +180,7 @@ async function resolveTrayIconForTheme() {
             console.log('[resolveTrayIconForTheme] windowTheme', windowTheme)
 
             const pickedPath =
-                windowTheme === 'dark'
-                    ? `icons/favicon/icon${isLinux ? '-padded' : ''}.png`
-                    : `icons/favicon/icon-light${isLinux ? '-padded' : ''}.png`
+                windowTheme === 'dark' ? 'icons/favicon/icon.png' : 'icons/favicon/icon-light.png'
 
             return await resolveResource(pickedPath)
         } catch {
@@ -194,9 +194,7 @@ async function resolveTrayIconForTheme() {
     }
 
     const pickedPath =
-        existingTheme.tray === 'dark'
-            ? `icons/favicon/icon-light${isLinux ? '-padded' : ''}.png`
-            : `icons/favicon/icon${isLinux ? '-padded' : ''}.png`
+        existingTheme.tray === 'dark' ? 'icons/favicon/icon-light.png' : 'icons/favicon/icon.png'
 
     return await resolveResource(pickedPath)
 }

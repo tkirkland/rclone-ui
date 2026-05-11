@@ -122,7 +122,7 @@ export default function GeneralSection() {
                             label="Tray Theme"
                             selectedKeys={[appearance.tray]}
                             onSelectionChange={(keys) => {
-                                const value = Array.from(keys)[0] as 'light' | 'dark' | 'system'
+                                const value = Array.from(keys)[0] as 'light' | 'dark' | 'system' | 'color'
                                 usePersistedStore.setState((state) => ({
                                     appearance: { ...state.appearance, tray: value },
                                 }))
@@ -137,6 +137,7 @@ export default function GeneralSection() {
                             <SelectItem key="system">System</SelectItem>
                             <SelectItem key="light">Light</SelectItem>
                             <SelectItem key="dark">Dark</SelectItem>
+                            <SelectItem key="color">Color</SelectItem>
                         </Select>
                     )}
                 </div>

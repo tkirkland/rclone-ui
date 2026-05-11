@@ -271,10 +271,11 @@ export default function RemoteCreateDrawer({
                                 data-focus-visible="false"
                                 onPress={() => {
                                     setTimeout(() => {
+                                        const { name, type, ...parameters } = config
                                         createRemoteMutation.mutate({
-                                            name: config.name,
-                                            type: config.type,
-                                            parameters: config,
+                                            name,
+                                            type,
+                                            parameters,
                                         })
                                     }, 10)
                                 }}
