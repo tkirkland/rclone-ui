@@ -1,5 +1,4 @@
 import * as Sentry from '@sentry/browser'
-import { getVersion as getUiVersion } from '@tauri-apps/api/app'
 import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { getCurrent, onOpenUrl } from '@tauri-apps/plugin-deep-link'
@@ -28,7 +27,6 @@ import {
     startSync,
 } from './lib/rclone/api'
 import rcloneClient from './lib/rclone/client'
-import { compareVersions } from './lib/rclone/common'
 import { initRclone } from './lib/rclone/init'
 import { initTray } from './lib/tray'
 import { openSmallWindow } from './lib/window'
