@@ -12,7 +12,6 @@ import type { Child } from '@tauri-apps/plugin-shell'
 import { CronExpressionParser } from 'cron-parser'
 import { defaultOptions } from 'tauri-plugin-sentry-api'
 import { getDeepLinkUrl, handleDeepLinkUrl } from './lib/deep'
-import { isDirectoryEmpty } from './lib/fs'
 import { LOCAL_HOST_ID, getHostInfo } from './lib/hosts'
 import { validateLicense } from './lib/license'
 import notify from './lib/notify'
@@ -525,17 +524,6 @@ async function startupMounts() {
                 remoteConfig.mountOnStart
             )
             try {
-                const isEmpty = await isDirectoryEmpty(remoteConfig.mountOnStart.mountPoint)
-                if (!isEmpty) {
-                    console.log(
-                        '[startupMounts] remote config mount point is not empty',
-                        remoteConfig.mountOnStart.mountPoint
-                    )
-                    throw new Error(
-                        `Mount point for ${remote} is not empty, make sure ${remoteConfig.mountOnStart.mountPoint} is empty`
-                    )
-                }
-
                 const {
                     mountPoint,
                     remotePath,
