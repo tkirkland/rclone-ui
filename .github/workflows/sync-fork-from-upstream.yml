@@ -28,13 +28,19 @@ jobs:
           git fetch origin main
 
           BEFORE=$(git rev-parse origin/main)
-          AFTER=$(git rev-parse upstream/main)
+          git checkout -B upstream-mirror upstream/main
+          rm -f .github/workflows/release-winget.yml
 
-          if [ "$BEFORE" = "$AFTER" ]; then
-            echo "main already matches upstream/main, nothing to mirror"
+          if ! git diff --quiet upstream/main -- .github/workflows/release-winget.yml; then
+            git add .github/workflows/release-winget.yml
+            git commit -m "ci: remove upstream winget workflow from fork mirror"
+          fi
+
+          if [ "$(git rev-parse origin/main^{tree})" = "$(git rev-parse HEAD^{tree})" ]; then
+            echo "main already matches sanitized upstream/main, nothing to mirror"
             echo "UPSTREAM_CHANGED=false" >> $GITHUB_ENV
           else
-            git push origin "upstream/main:refs/heads/main" --force-with-lease
+            git push origin "HEAD:refs/heads/main" --force-with-lease="refs/heads/main:$BEFORE"
             echo "UPSTREAM_CHANGED=true" >> $GITHUB_ENV
           fi
 
