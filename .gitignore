@@ -26,6 +26,7 @@ dist-ssr
 .env*
 !.env.example
 .cursorignore
+.claude/settings.local.json
 .work
 .work/*
 scripts/release.md
