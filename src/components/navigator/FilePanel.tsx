@@ -286,6 +286,7 @@ const FilePanel = forwardRef<
                     <RemoteSidebar
                         position="left"
                         selectedRemote={nav.selectedRemote}
+                        cwd={nav.cwd}
                         onRemoteSelect={nav.selectRemote}
                         allowedKeys={allowedKeys}
                         remotes={nav.remotes}
@@ -361,6 +362,7 @@ const FilePanel = forwardRef<
                     <RemoteSidebar
                         position="right"
                         selectedRemote={nav.selectedRemote}
+                        cwd={nav.cwd}
                         onRemoteSelect={nav.selectRemote}
                         allowedKeys={allowedKeys}
                         remotes={nav.remotes}
