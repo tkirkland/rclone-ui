@@ -26,6 +26,7 @@ jobs:
           sed -i "s/\"version\": \"${VERSION}\"/\"version\": \"${PERSONAL}\"/" src-tauri/tauri.conf.json
           sed -i "s/\"version\": \"${VERSION}\"/\"version\": \"${PERSONAL}\"/" package.json
           sed -i "s/^version = \"${VERSION}\"/version = \"${PERSONAL}\"/" src-tauri/Cargo.toml
+          echo "PERSONAL_VERSION=${PERSONAL}" >> "$GITHUB_ENV"
           echo "Patched version: ${VERSION} -> ${PERSONAL}"
 
       - name: Generate changelog
@@ -119,6 +120,32 @@ jobs:
           prerelease: false
           args: "--config '{\"bundle\":{\"createUpdaterArtifacts\":false}}'"
 
+      - name: Rename Linux release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          rename_asset() {
+            local extension="$1"
+            local target_name="$2"
+            local api_url
+            api_url=$(gh release view "v${PERSONAL_VERSION}" \
+              --json assets \
+              --jq ".assets[] | select(.name | endswith(\"${extension}\")) | .apiUrl" \
+              | head -n 1)
+
+            if [ -z "$api_url" ]; then
+              echo "No ${extension} asset found for v${PERSONAL_VERSION}"
+              exit 1
+            fi
+
+            local asset_id="${api_url##*/}"
+            gh api -X PATCH "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" \
+              -f name="${target_name}"
+          }
+
+          rename_asset ".deb" "Rclone-UI-personal-v${PERSONAL_VERSION%-personal}-linux-x64.deb"
+          rename_asset ".rpm" "Rclone-UI-personal-v${PERSONAL_VERSION%-personal}-linux-x64.rpm"
+
   release-windows:
     needs: release-linux
     permissions:
@@ -135,6 +162,7 @@ jobs:
           sed -i "s/\"version\": \"${VERSION}\"/\"version\": \"${PERSONAL}\"/" src-tauri/tauri.conf.json
           sed -i "s/\"version\": \"${VERSION}\"/\"version\": \"${PERSONAL}\"/" package.json
           sed -i "s/^version = \"${VERSION}\"/version = \"${PERSONAL}\"/" src-tauri/Cargo.toml
+          echo "PERSONAL_VERSION=${PERSONAL}" >> "$GITHUB_ENV"
           echo "Patched version: ${VERSION} -> ${PERSONAL}"
 
       - name: Setup node
@@ -163,3 +191,22 @@ jobs:
           releaseDraft: false
           prerelease: false
           args: "--config '{\"bundle\":{\"createUpdaterArtifacts\":false}}'"
+
+      - name: Rename Windows release asset
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          api_url=$(gh release view "v${PERSONAL_VERSION}" \
+            --json assets \
+            --jq '.assets[] | select(.name | endswith(".exe")) | .apiUrl' \
+            | head -n 1)
+
+          if [ -z "$api_url" ]; then
+            echo "No .exe asset found for v${PERSONAL_VERSION}"
+            exit 1
+          fi
+
+          asset_id="${api_url##*/}"
+          gh api -X PATCH "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" \
+            -f name="Rclone-UI-personal-v${PERSONAL_VERSION%-personal}-windows-x64-setup.exe"
