@@ -30,11 +30,14 @@ pub fn make_transparent(_window: &WebviewWindow) -> Result<(), tauri::Error> {
 }
 
 #[cfg(target_os = "linux")]
-pub(crate) fn focus_window_linux(window: &WebviewWindow) {
-    use gtk::prelude::*;
-    if let Ok(gtk_win) = window.gtk_window() {
-        gtk_win.present_with_time(gtk::current_event_time());
-    }
+pub(crate) fn focus_window_linux(app_handle: &AppHandle, window: &WebviewWindow) {
+    let window_clone = window.clone();
+    let _ = app_handle.run_on_main_thread(move || {
+        use gtk::prelude::*;
+        if let Ok(gtk_win) = window_clone.gtk_window() {
+            gtk_win.present_with_time(gtk::current_event_time());
+        }
+    });
 }
 
 #[tauri::command]
@@ -48,10 +51,10 @@ pub async fn open_full_window(
     if let Some(existing) = app_handle.get_webview_window(&name) {
         existing.set_focus().map_err(|e| e.to_string())?;
         #[cfg(target_os = "linux")]
-        focus_window_linux(&existing);
+        focus_window_linux(&app_handle, &existing);
         return Ok(());
     }
-	
+
     let os = std::env::consts::OS;
 
     let primary_monitor = app_handle
@@ -95,14 +98,21 @@ pub async fn open_full_window(
     window.show().map_err(|e| e.to_string())?;
     window.set_focus().map_err(|e| e.to_string())?;
     #[cfg(target_os = "linux")]
-    focus_window_linux(&window);
+    focus_window_linux(&app_handle, &window);
 
 	#[cfg(target_os = "linux")]
 	window.center().map_err(|e| e.to_string())?;
 
-    if os != "windows" && os != "macos" {
-        window.set_resizable(false).map_err(|e| e.to_string())?;
-        window.set_resizable(true).map_err(|e| e.to_string())?;
+    #[cfg(target_os = "linux")]
+    {
+        let window_clone = window.clone();
+        app_handle.run_on_main_thread(move || {
+            use gtk::prelude::*;
+            if let Ok(gtk_win) = window_clone.gtk_window() {
+                gtk_win.set_resizable(false);
+                gtk_win.set_resizable(true);
+            }
+        }).map_err(|e| e.to_string())?;
     }
 
     Ok(())
@@ -120,7 +130,7 @@ pub async fn open_window(
     if let Some(existing) = app_handle.get_webview_window(&name) {
         existing.set_focus().map_err(|e| e.to_string())?;
         #[cfg(target_os = "linux")]
-        focus_window_linux(&existing);
+        focus_window_linux(&app_handle, &existing);
         return Ok(());
     }
 
@@ -195,7 +205,7 @@ pub async fn open_window(
     if let Some(existing) = app_handle.get_webview_window(&name) {
         existing.set_focus().map_err(|e| e.to_string())?;
         #[cfg(target_os = "linux")]
-        focus_window_linux(&existing);
+        focus_window_linux(&app_handle, &existing);
         return Ok(());
     }
 
@@ -215,14 +225,22 @@ pub async fn open_window(
 
     let window = builder.build().map_err(|e| e.to_string())?;
 
+    std::thread::sleep(std::time::Duration::from_millis(750));
+
     window.center().map_err(|e| e.to_string())?;
     window.set_zoom(1.0).map_err(|e| e.to_string())?;
     window.show().map_err(|e| e.to_string())?;
     window.set_focus().map_err(|e| e.to_string())?;
-    focus_window_linux(&window);
 
-    window.set_resizable(false).map_err(|e| e.to_string())?;
-    window.set_resizable(true).map_err(|e| e.to_string())?;
+    let window_clone = window.clone();
+    app_handle.run_on_main_thread(move || {
+        use gtk::prelude::*;
+        if let Ok(gtk_win) = window_clone.gtk_window() {
+            gtk_win.present_with_time(gtk::current_event_time());
+            gtk_win.set_resizable(false);
+            gtk_win.set_resizable(true);
+        }
+    }).map_err(|e| e.to_string())?;
 
     Ok(())
 }
@@ -236,11 +254,9 @@ pub async fn open_small_window(
 	if let Some(existing) = app_handle.get_webview_window(&name) {
         existing.set_focus().map_err(|e| e.to_string())?;
         #[cfg(target_os = "linux")]
-        focus_window_linux(&existing);
+        focus_window_linux(&app_handle, &existing);
         return Ok(());
     }
-	
-    let os = std::env::consts::OS;
 
     #[allow(unused_mut)]
     let mut builder = WebviewWindowBuilder::new(&app_handle, &name, WebviewUrl::App(url.into()))
@@ -275,15 +291,22 @@ pub async fn open_small_window(
     window.show().map_err(|e| e.to_string())?;
     window.set_focus().map_err(|e| e.to_string())?;
     #[cfg(target_os = "linux")]
-    focus_window_linux(&window);
+    focus_window_linux(&app_handle, &window);
     window.set_always_on_top(true).map_err(|e| e.to_string())?;
 	
 	#[cfg(target_os = "linux")]
 	window.center().map_err(|e| e.to_string())?;
 
-    if os != "windows" && os != "macos" {
-        window.set_resizable(true).map_err(|e| e.to_string())?;
-        window.set_resizable(false).map_err(|e| e.to_string())?;
+    #[cfg(target_os = "linux")]
+    {
+        let window_clone = window.clone();
+        app_handle.run_on_main_thread(move || {
+            use gtk::prelude::*;
+            if let Ok(gtk_win) = window_clone.gtk_window() {
+                gtk_win.set_resizable(true);
+                gtk_win.set_resizable(false);
+            }
+        }).map_err(|e| e.to_string())?;
     }
 
     Ok(())
