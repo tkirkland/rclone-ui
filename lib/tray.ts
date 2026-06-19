@@ -9,24 +9,12 @@ import { openUrl } from '@tauri-apps/plugin-opener'
 import { platform } from '@tauri-apps/plugin-os'
 import { exit } from '@tauri-apps/plugin-process'
 import { usePersistedStore } from '../store/persisted'
-import { openSmallWindow, openWindow } from './window'
+import { openWindow } from './window'
 
 async function buildMenu() {
     console.log('[buildMenu]')
 
     const menuItems: (MenuItem | PredefinedMenuItem)[] = []
-
-    const onboardingMenuItem = await MenuItem.new({
-        id: 'onboarding',
-        text: 'Onboarding',
-        action: async () => {
-            await openSmallWindow({
-                name: 'Onboarding',
-                url: '/onboarding',
-            })
-        },
-    })
-    menuItems.push(onboardingMenuItem)
 
     const openMenuItem = await MenuItem.new({
         id: 'open',
@@ -165,8 +153,11 @@ async function resolveTrayIconForTheme() {
     const existingTheme = usePersistedStore.getState().appearance
     console.log('[resolveTrayIconForTheme] existingTheme', existingTheme)
 
+    const isLinuxMint = platform() === 'linux' && (await invoke<boolean>('is_linux_mint'))
+    const suffix = isLinuxMint ? '-padded' : ''
+
     if (existingTheme.tray === 'color') {
-        return await resolveResource('icons/favicon/icon-color.png')
+        return await resolveResource(`icons/favicon/icon-color${suffix}.png`)
     }
 
     if (existingTheme.tray === 'system') {
@@ -180,7 +171,9 @@ async function resolveTrayIconForTheme() {
             console.log('[resolveTrayIconForTheme] windowTheme', windowTheme)
 
             const pickedPath =
-                windowTheme === 'dark' ? 'icons/favicon/icon.png' : 'icons/favicon/icon-light.png'
+                windowTheme === 'dark'
+                    ? `icons/favicon/icon${suffix}.png`
+                    : `icons/favicon/icon-light${suffix}.png`
 
             return await resolveResource(pickedPath)
         } catch {
@@ -194,7 +187,9 @@ async function resolveTrayIconForTheme() {
     }
 
     const pickedPath =
-        existingTheme.tray === 'dark' ? 'icons/favicon/icon-light.png' : 'icons/favicon/icon.png'
+        existingTheme.tray === 'dark'
+            ? `icons/favicon/icon-light${suffix}.png`
+            : `icons/favicon/icon${suffix}.png`
 
     return await resolveResource(pickedPath)
 }

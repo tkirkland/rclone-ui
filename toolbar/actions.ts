@@ -314,7 +314,10 @@ const actions: ToolbarActionDefinition[] = [
                 }
             }
 
-            const queryIsOnlyKeyword = !query || matchesKeyword(query, COMMAND_KEYWORDS.mount) && query.trim().split(/\s+/).length <= 1
+            const queryIsOnlyKeyword =
+                !query ||
+                (matchesKeyword(query, COMMAND_KEYWORDS.mount) &&
+                    query.trim().split(/\s+/).length <= 1)
 
             if (paths.length === 0 || queryIsOnlyKeyword) {
                 results.push(createBaseResult('Mount', COMMAND_DESCRIPTIONS.mount, {}, 42))
@@ -493,7 +496,10 @@ const actions: ToolbarActionDefinition[] = [
                 }
             }
 
-            const queryIsOnlyKeyword = !query || matchesKeyword(query, COMMAND_KEYWORDS.serve) && query.trim().split(/\s+/).length <= 1
+            const queryIsOnlyKeyword =
+                !query ||
+                (matchesKeyword(query, COMMAND_KEYWORDS.serve) &&
+                    query.trim().split(/\s+/).length <= 1)
 
             if (paths.length === 0 || queryIsOnlyKeyword) {
                 results.push(createBaseResult('Serve', COMMAND_DESCRIPTIONS.serve, {}, 40))
@@ -732,8 +738,6 @@ const actions: ToolbarActionDefinition[] = [
         label: 'Browse',
         description: COMMAND_DESCRIPTIONS.browse,
         keywords: COMMAND_KEYWORDS.browse,
-        getDefaultResult: () =>
-            createBaseResult('Browse', 'Specify a remote to browse its files', {}, 37),
         getResults: ({ query, paths, remotes }) => {
             if (query && !matchesKeyword(query, COMMAND_KEYWORDS.browse)) {
                 return []

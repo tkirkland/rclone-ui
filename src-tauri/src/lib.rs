@@ -31,8 +31,100 @@ fn show_toolbar(app_handle: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn is_flathub() -> bool {
+fn is_flatpak() -> bool {
     std::path::Path::new("/.flatpak-info").exists() || std::env::var_os("FLATPAK_ID").is_some()
+}
+
+#[tauri::command]
+fn is_linux_mint() -> bool {
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let paths: &[&str] = if is_flatpak() {
+            &["/run/host/os-release", "/etc/os-release", "/usr/lib/os-release"]
+        } else {
+            &["/etc/os-release", "/usr/lib/os-release"]
+        };
+
+        for path in paths {
+            if let Ok(contents) = std::fs::read_to_string(path) {
+                return contents.lines().any(|line| {
+                    let line = line.trim();
+                    line == "ID=linuxmint" || line == "ID=\"linuxmint\""
+                });
+            }
+        }
+
+        false
+    }
+}
+
+#[tauri::command]
+fn has_flatpak_permissions() -> bool {
+    // Native app: no Flatpak permission needed.
+    if !is_flatpak() {
+        return true;
+    }
+
+    let Ok(contents) = std::fs::read_to_string("/.flatpak-info") else {
+        return false;
+    };
+
+    let mut in_context = false;
+
+    for line in contents.lines() {
+        let line = line.trim();
+
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        if line.starts_with('[') && line.ends_with(']') {
+            in_context = line == "[Context]";
+            continue;
+        }
+
+        if !in_context {
+            continue;
+        }
+
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+
+        if key.trim() != "filesystems" {
+            continue;
+        }
+
+        for raw in value.split(';') {
+            let item = raw.trim();
+
+            if item.is_empty() {
+                continue;
+            }
+
+            // Explicit negative override, e.g. !host
+            if item == "!host" || item.starts_with("!host:") {
+                return false;
+            }
+
+            // Writable host access
+            if item == "host" || item == "host:rw" || item == "host:create" {
+                return true;
+            }
+
+            // Read-only host access is not enough for full rclone filesystem usage
+            if item == "host:ro" {
+                return false;
+            }
+        }
+    }
+
+    false
 }
 
 #[tauri::command]
@@ -787,7 +879,7 @@ pub fn run() {
 
     let mut builder = tauri::Builder::default();
 
-    if !is_flathub() {
+    if !is_flatpak() {
         builder = builder
             .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
                 let _ = shortcut::show_toolbar_window(app);
@@ -827,7 +919,9 @@ pub fn run() {
             show_toolbar,
             update_system_rclone,
             test_proxy_connection,
-            is_flathub,
+            is_flatpak,
+            is_linux_mint,
+            has_flatpak_permissions,
             open_full_window,
             open_window,
             open_small_window,
@@ -842,7 +936,7 @@ pub fn run() {
             {
                 // Flatpak/Flathub sandbox typically cannot write to system desktop/mime locations.
                 // Deep-link registration is best-effort; never fail app startup.
-                if is_flathub() {
+                if is_flatpak() {
                     log::info!("skipping deep-link registration in Flatpak/Flathub");
                 } else {
 					use tauri_plugin_deep_link::DeepLinkExt;

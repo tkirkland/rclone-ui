@@ -29,6 +29,36 @@ pub fn make_transparent(_window: &WebviewWindow) -> Result<(), tauri::Error> {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
+fn centered_logical_position(
+    app_handle: &AppHandle,
+    win_width: f64,
+    win_height: f64,
+) -> Option<(f64, f64)> {
+    let monitor = app_handle
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| app_handle.available_monitors().ok()?.into_iter().next())?;
+    let scale = monitor.scale_factor();
+    let size = monitor.size().to_logical::<f64>(scale);
+    let pos = monitor.position().to_logical::<f64>(scale);
+    let x = pos.x + ((size.width - win_width) / 2.0).max(0.0);
+    let y = pos.y + ((size.height - win_height) / 2.0).max(0.0);
+    Some((x, y))
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn focus_window_linux(app_handle: &AppHandle, window: &WebviewWindow) {
+    let window_clone = window.clone();
+    let _ = app_handle.run_on_main_thread(move || {
+        use gtk::prelude::*;
+        if let Ok(gtk_win) = window_clone.gtk_window() {
+            gtk_win.present_with_time(gtk::current_event_time());
+        }
+    });
+}
+
 #[tauri::command]
 #[allow(unused_variables)]
 pub async fn open_full_window(
@@ -39,9 +69,11 @@ pub async fn open_full_window(
 ) -> Result<(), String> {
     if let Some(existing) = app_handle.get_webview_window(&name) {
         existing.set_focus().map_err(|e| e.to_string())?;
+        #[cfg(target_os = "linux")]
+        focus_window_linux(&app_handle, &existing);
         return Ok(());
     }
-	
+
     let os = std::env::consts::OS;
 
     let primary_monitor = app_handle
@@ -70,6 +102,11 @@ pub async fn open_full_window(
         .decorations(true)
         .zoom_hotkeys_enabled(false);
 
+    #[cfg(target_os = "linux")]
+    if let Some((x, y)) = centered_logical_position(&app_handle, width, height) {
+        builder = builder.position(x, y);
+    }
+
     #[cfg(target_os = "macos")]
     if hide_title_bar.unwrap_or(false) {
         builder = builder.title_bar_style(tauri::TitleBarStyle::Overlay);
@@ -79,17 +116,29 @@ pub async fn open_full_window(
 
     std::thread::sleep(std::time::Duration::from_millis(750));
 
+    #[cfg(not(target_os = "linux"))]
     window.center().map_err(|e| e.to_string())?;
     window.set_zoom(1.0).map_err(|e| e.to_string())?;
     window.show().map_err(|e| e.to_string())?;
     window.set_focus().map_err(|e| e.to_string())?;
-	
-	#[cfg(target_os = "linux")]
-	window.center().map_err(|e| e.to_string())?;
+    #[cfg(target_os = "linux")]
+    focus_window_linux(&app_handle, &window);
 
-    if os != "windows" && os != "macos" {
-        window.set_resizable(false).map_err(|e| e.to_string())?;
-        window.set_resizable(true).map_err(|e| e.to_string())?;
+	#[cfg(target_os = "linux")]
+	if let Some((x, y)) = centered_logical_position(&app_handle, width, height) {
+		let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)));
+	}
+
+    #[cfg(target_os = "linux")]
+    {
+        let window_clone = window.clone();
+        app_handle.run_on_main_thread(move || {
+            use gtk::prelude::*;
+            if let Ok(gtk_win) = window_clone.gtk_window() {
+                gtk_win.set_resizable(false);
+                gtk_win.set_resizable(true);
+            }
+        }).map_err(|e| e.to_string())?;
     }
 
     Ok(())
@@ -106,6 +155,8 @@ pub async fn open_window(
 ) -> Result<(), String> {
     if let Some(existing) = app_handle.get_webview_window(&name) {
         existing.set_focus().map_err(|e| e.to_string())?;
+        #[cfg(target_os = "linux")]
+        focus_window_linux(&app_handle, &existing);
         return Ok(());
     }
 
@@ -178,13 +229,15 @@ pub async fn open_window(
 ) -> Result<(), String> {
     if let Some(existing) = app_handle.get_webview_window(&name) {
         existing.set_focus().map_err(|e| e.to_string())?;
+        #[cfg(target_os = "linux")]
+        focus_window_linux(&app_handle, &existing);
         return Ok(());
     }
 
     let width = width.unwrap_or(840.0);
     let height = height.unwrap_or(725.0);
 
-    let builder = WebviewWindowBuilder::new(&app_handle, &name, WebviewUrl::App(url.into()))
+    let mut builder = WebviewWindowBuilder::new(&app_handle, &name, WebviewUrl::App(url.into()))
         .title(&name)
         .inner_size(width, height)
         .min_inner_size(700.0, 700.0)
@@ -195,15 +248,27 @@ pub async fn open_window(
         .decorations(true)
         .zoom_hotkeys_enabled(false);
 
+    if let Some((x, y)) = centered_logical_position(&app_handle, width, height) {
+        builder = builder.position(x, y);
+    }
+
     let window = builder.build().map_err(|e| e.to_string())?;
 
-    window.center().map_err(|e| e.to_string())?;
+    std::thread::sleep(std::time::Duration::from_millis(750));
+
     window.set_zoom(1.0).map_err(|e| e.to_string())?;
     window.show().map_err(|e| e.to_string())?;
     window.set_focus().map_err(|e| e.to_string())?;
 
-    window.set_resizable(false).map_err(|e| e.to_string())?;
-    window.set_resizable(true).map_err(|e| e.to_string())?;
+    let window_clone = window.clone();
+    app_handle.run_on_main_thread(move || {
+        use gtk::prelude::*;
+        if let Ok(gtk_win) = window_clone.gtk_window() {
+            gtk_win.present_with_time(gtk::current_event_time());
+            gtk_win.set_resizable(false);
+            gtk_win.set_resizable(true);
+        }
+    }).map_err(|e| e.to_string())?;
 
     Ok(())
 }
@@ -216,9 +281,11 @@ pub async fn open_small_window(
 ) -> Result<(), String> {
 	if let Some(existing) = app_handle.get_webview_window(&name) {
         existing.set_focus().map_err(|e| e.to_string())?;
+        #[cfg(target_os = "linux")]
+        focus_window_linux(&app_handle, &existing);
         return Ok(());
     }
-	
+
     let os = std::env::consts::OS;
 
     let mut builder = WebviewWindowBuilder::new(&app_handle, &name, WebviewUrl::App(url.into()))
@@ -232,6 +299,11 @@ pub async fn open_small_window(
 		.shadow(false)
 		.zoom_hotkeys_enabled(false);
 
+    #[cfg(target_os = "linux")]
+    if let Some((x, y)) = centered_logical_position(&app_handle, 800.0, 500.0) {
+        builder = builder.position(x, y);
+    }
+
 	#[cfg(target_os = "linux")]
     {
         builder = builder.transparent(true);
@@ -239,6 +311,7 @@ pub async fn open_small_window(
 
     let window = builder.build().map_err(|e| e.to_string())?;
 
+    #[cfg(not(target_os = "linux"))]
     window.center().map_err(|e| e.to_string())?;
     window.set_zoom(1.0).map_err(|e| e.to_string())?;
 
@@ -246,20 +319,31 @@ pub async fn open_small_window(
     if let Err(err) = make_transparent(&window) {
         log::warn!("failed to make small window transparent: {}", err);
     }
-	
+
 	std::thread::sleep(std::time::Duration::from_millis(750));
 
 	window.set_decorations(false).map_err(|e| e.to_string())?;
     window.show().map_err(|e| e.to_string())?;
     window.set_focus().map_err(|e| e.to_string())?;
+    #[cfg(target_os = "linux")]
+    focus_window_linux(&app_handle, &window);
     window.set_always_on_top(true).map_err(|e| e.to_string())?;
-	
-	#[cfg(target_os = "linux")]
-	window.center().map_err(|e| e.to_string())?;
 
-    if os != "windows" && os != "macos" {
-        window.set_resizable(true).map_err(|e| e.to_string())?;
-        window.set_resizable(false).map_err(|e| e.to_string())?;
+	#[cfg(target_os = "linux")]
+	if let Some((x, y)) = centered_logical_position(&app_handle, 800.0, 500.0) {
+		let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)));
+	}
+
+    #[cfg(target_os = "linux")]
+    {
+        let window_clone = window.clone();
+        app_handle.run_on_main_thread(move || {
+            use gtk::prelude::*;
+            if let Ok(gtk_win) = window_clone.gtk_window() {
+                gtk_win.set_resizable(true);
+                gtk_win.set_resizable(false);
+            }
+        }).map_err(|e| e.to_string())?;
     }
 
     Ok(())

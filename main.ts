@@ -6,13 +6,13 @@ import { getCurrent, onOpenUrl } from '@tauri-apps/plugin-deep-link'
 import { ask, message } from '@tauri-apps/plugin-dialog'
 import { debug, error, info, trace, warn } from '@tauri-apps/plugin-log'
 import { platform } from '@tauri-apps/plugin-os'
+import { writeText } from '@tauri-apps/plugin-clipboard-manager'
 import { exit, relaunch } from '@tauri-apps/plugin-process'
 import type { Child } from '@tauri-apps/plugin-shell'
 import { check } from '@tauri-apps/plugin-updater'
 import { CronExpressionParser } from 'cron-parser'
 import { defaultOptions } from 'tauri-plugin-sentry-api'
 import { getDeepLinkUrl, handleDeepLinkUrl } from './lib/deep'
-import { isDirectoryEmpty } from './lib/fs'
 import { LOCAL_HOST_ID, getHostInfo } from './lib/hosts'
 import { validateLicense } from './lib/license'
 import notify from './lib/notify'
@@ -73,6 +73,27 @@ try {
     forwardConsole('error', error)
 } catch (error) {
     console.error('Could not enable console logs', error)
+}
+
+async function checkFlatpakPermissions() {
+    const hasPermissions = await invoke<boolean>('has_flatpak_permissions')
+    if (hasPermissions) return
+
+    const copyCommand = await ask(
+        'You are running the flatpak version of Rclone UI, which is sandboxed.\n\nrclone is a file management utility that needs disk access in order to run. Please allow it using the following command (copy paste in your terminal):\n\nflatpak override --user --filesystem=host com.rcloneui.RcloneUI\n\nRestart Rclone UI afterwards.',
+        {
+            title: 'Flatpak Permissions Required',
+            kind: 'warning',
+            okLabel: 'Copy Command & Exit',
+            cancelLabel: 'Exit',
+        }
+    )
+
+    if (copyCommand) {
+        await writeText('flatpak override --user --filesystem=host com.rcloneui.RcloneUI')
+    }
+
+    await exit()
 }
 
 async function waitForHydration() {
@@ -505,17 +526,6 @@ async function startupMounts() {
                 remoteConfig.mountOnStart
             )
             try {
-                const isEmpty = await isDirectoryEmpty(remoteConfig.mountOnStart.mountPoint)
-                if (!isEmpty) {
-                    console.log(
-                        '[startupMounts] remote config mount point is not empty',
-                        remoteConfig.mountOnStart.mountPoint
-                    )
-                    throw new Error(
-                        `Mount point for ${remote} is not empty, make sure ${remoteConfig.mountOnStart.mountPoint} is empty`
-                    )
-                }
-
                 const {
                     mountPoint,
                     remotePath,
@@ -1115,6 +1125,7 @@ async function handleDeepLink() {
 }
 
 waitForHydration()
+    .then(() => checkFlatpakPermissions())
     .then(() => initializeHostStore())
     .then(() => checkHostReachability())
     .then(() => checkVersion())

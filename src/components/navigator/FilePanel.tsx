@@ -1,13 +1,18 @@
-import { Divider } from '@heroui/react'
+import { Button, Divider, Tooltip } from '@heroui/react'
+import { useQuery } from '@tanstack/react-query'
+import { FolderPlusIcon } from 'lucide-react'
 import {
     forwardRef,
     startTransition,
     useCallback,
     useEffect,
     useImperativeHandle,
+    useMemo,
     useRef,
     useState,
 } from 'react'
+import { supportsPublicLink } from '../../../lib/rclone/constants'
+import rclone from '../../../lib/rclone/client'
 import { useHostStore } from '../../../store/host.ts'
 import FileList from './FileList'
 import PanelToolbar, { type ToolbarButtons } from './PanelToolbar'
@@ -15,6 +20,7 @@ import PathBreadcrumb from './PathBreadcrumb'
 import PreviewDrawer from './PreviewDrawer'
 import RemoteSidebar from './RemoteSidebar'
 import type { AllowedKey, ContextMenuItem, Entry, FilePanelHandle, SelectItem } from './types'
+import useCreateFolder from './useCreateFolder'
 import useFileNavigation from './useFileNavigation'
 import { RE_LEADING_SLASH, dragStateRef, dropTargetsRef, serializeRemotePath } from './utils'
 
@@ -36,6 +42,7 @@ const FilePanel = forwardRef<
         showPreviewColumn?: boolean
         onPreviewRequest?: (item: Entry) => void
         onDownload?: (item: Entry) => void
+        onShare?: (item: Entry) => void
         onRename?: (item: Entry) => void
         onDelete?: (item: Entry) => void
         contextMenuItems?: ContextMenuItem[]
@@ -59,6 +66,7 @@ const FilePanel = forwardRef<
         showPreviewColumn = true,
         onPreviewRequest,
         onDownload,
+        onShare,
         onRename,
         onDelete,
         contextMenuItems,
@@ -80,6 +88,48 @@ const FilePanel = forwardRef<
         allowMultiple,
         isActive,
     })
+
+    const remoteConfigQuery = useQuery({
+        queryKey: ['remote', nav.selectedRemote, 'config'],
+        queryFn: async () => {
+            return await rclone('/config/get', {
+                params: { query: { name: nav.selectedRemote! } },
+            })
+        },
+        enabled: nav.isRemote,
+    })
+
+    const canShare = supportsPublicLink(remoteConfigQuery.data?.type)
+
+    const { canCreateFolder, createFolder } = useCreateFolder(
+        nav.selectedRemote,
+        nav.cwd,
+        nav.refresh
+    )
+
+    const newFolderButton = useMemo(
+        () =>
+            canCreateFolder ? (
+                <Tooltip
+                    key="new-folder-tooltip"
+                    content="Create a new folder in this directory"
+                    size="lg"
+                    color="foreground"
+                >
+                    <Button
+                        color="primary"
+                        size="sm"
+                        radius="full"
+                        startContent={<FolderPlusIcon className="size-4" />}
+                        className="gap-1 min-w-fit"
+                        onPress={createFolder}
+                    >
+                        NEW
+                    </Button>
+                </Tooltip>
+            ) : null,
+        [canCreateFolder, createFolder]
+    )
 
     const listRef = useRef<HTMLDivElement>(null)
     const panelRef = useRef<HTMLDivElement>(null)
@@ -284,6 +334,7 @@ const FilePanel = forwardRef<
                     <RemoteSidebar
                         position="left"
                         selectedRemote={nav.selectedRemote}
+                        cwd={nav.cwd}
                         onRemoteSelect={nav.selectRemote}
                         allowedKeys={allowedKeys}
                         remotes={nav.remotes}
@@ -305,7 +356,7 @@ const FilePanel = forwardRef<
 
                 <div className="relative flex flex-col w-full h-full overflow-hidden">
                     <div
-                        className={`sticky top-0 z-10 grid ${showPreviewColumn ? 'grid-cols-[2.5rem_1fr_6rem_9rem_9rem]' : 'grid-cols-[2.5rem_1fr_6rem_9rem_2.5rem]'} items-center py-2 bg-default-100`}
+                        className={`sticky top-0 z-10 grid ${showPreviewColumn ? 'grid-cols-[2.5rem_1fr_6rem_9rem_11rem]' : 'grid-cols-[2.5rem_1fr_6rem_9rem_2.5rem]'} items-center py-2 bg-default-100`}
                     >
                         <div />
                         <div className="pl-2 font-semibold text-small">Name</div>
@@ -327,6 +378,7 @@ const FilePanel = forwardRef<
                             showPreviewColumn={showPreviewColumn}
                             onPreviewClick={handlePreviewClick}
                             onDownload={onDownload}
+                            onShare={canShare ? onShare : undefined}
                             onRename={onRename}
                             onDelete={onDelete}
                             draggable={selectionMode === 'drag' || selectionMode === 'both'}
@@ -348,6 +400,7 @@ const FilePanel = forwardRef<
                         onSearchChange={nav.setSearchTerm}
                         renderToolbar={renderToolbar}
                         visible={toolbarVisible && nav.selectedRemote !== 'UI_FAVORITES'}
+                        newFolderButton={newFolderButton}
                     />
                 </div>
             </div>
@@ -358,6 +411,7 @@ const FilePanel = forwardRef<
                     <RemoteSidebar
                         position="right"
                         selectedRemote={nav.selectedRemote}
+                        cwd={nav.cwd}
                         onRemoteSelect={nav.selectRemote}
                         allowedKeys={allowedKeys}
                         remotes={nav.remotes}
