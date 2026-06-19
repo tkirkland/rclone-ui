@@ -18,6 +18,7 @@ import {
 } from '@heroui/react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { invoke } from '@tauri-apps/api/core'
+import { writeText } from '@tauri-apps/plugin-clipboard-manager'
 import { ask, message, save } from '@tauri-apps/plugin-dialog'
 import { platform } from '@tauri-apps/plugin-os'
 import { AnimatePresence, motion } from 'framer-motion'
@@ -38,9 +39,10 @@ import { Group, Panel, Separator } from 'react-resizable-panels'
 import { getFsInfo } from '../../lib/format'
 // import { Document, Page, pdfjs } from 'react-pdf'
 import { formatBytes } from '../../lib/format.ts'
+import notify from '../../lib/notify'
 import { startCopy, startMove } from '../../lib/rclone/api'
 import rclone from '../../lib/rclone/client'
-import { supportsPersistentEmptyFolders } from '../../lib/rclone/constants'
+import { supportsPersistentEmptyFolders, supportsPublicLink } from '../../lib/rclone/constants'
 import { openWindow } from '../../lib/window'
 import { FileIcon } from '../components/navigator'
 import { FilePanel, type FilePanelHandle, type ToolbarButtons } from '../components/navigator'
@@ -120,6 +122,14 @@ export default function Browser() {
             if (!remote || remote === 'UI_FAVORITES') return false
             if (remote === 'UI_LOCAL_FS') return true
             return supportsPersistentEmptyFolders(getBackendTypeForRemote(remote))
+        },
+        [getBackendTypeForRemote]
+    )
+
+    const canShareAtRemote = useCallback(
+        (remote: string | null) => {
+            if (!remote || remote === 'UI_LOCAL_FS' || remote === 'UI_FAVORITES') return false
+            return supportsPublicLink(getBackendTypeForRemote(remote))
         },
         [getBackendTypeForRemote]
     )
@@ -269,6 +279,36 @@ export default function Browser() {
                 title: 'Error',
                 kind: 'error',
             })
+        }
+    }, [])
+
+    const handleShare = useCallback(async (entry: Entry) => {
+        try {
+            const { root, filePath } = getFsInfo(entry.fullPath)
+            const result = await rclone('/operations/publiclink', {
+                params: {
+                    query: {
+                        fs: root,
+                        remote: filePath,
+                    },
+                },
+            })
+            if (result?.url) {
+                await writeText(result.url)
+                await notify({
+                    title: 'Link Copied',
+                    body: `Public link for "${entry.name}" copied to clipboard`,
+                })
+            }
+        } catch (error) {
+            await message(
+                error instanceof Error ? error.message : 'Failed to generate public link',
+                {
+                    title: 'Share Error',
+                    kind: 'error',
+                    okLabel: 'OK',
+                }
+            )
         }
     }, [])
 
@@ -426,6 +466,7 @@ export default function Browser() {
                         showPreviewColumn={true}
                         onDrop={(items, dest) => handleDrop(items, dest, 'left')}
                         onDownload={handleDownload}
+                        onShare={canShareAtRemote(leftPanelLocation.remote) ? handleShare : undefined}
                         onRename={handleRename}
                         onDelete={handleDelete}
                         onNavigate={handleLeftNavigate}
@@ -448,6 +489,7 @@ export default function Browser() {
                         showPreviewColumn={true}
                         onDrop={(items, dest) => handleDrop(items, dest, 'right')}
                         onDownload={handleDownload}
+                        onShare={canShareAtRemote(rightPanelLocation.remote) ? handleShare : undefined}
                         onRename={handleRename}
                         onDelete={handleDelete}
                         onNavigate={handleRightNavigate}
