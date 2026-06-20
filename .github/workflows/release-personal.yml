@@ -46,7 +46,7 @@ jobs:
           # Build categorized changelog
           {
             echo "BODY<<CHANGELOG_EOF"
-            echo "# Rclone UI v\${VERSION}-personal"
+            echo "# Rclone UI v${PERSONAL_VERSION}"
             echo ""
             echo "Linux x64 and Windows x64. Unsigned personal build."
             echo ""
