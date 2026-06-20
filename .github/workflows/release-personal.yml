@@ -76,8 +76,7 @@ jobs:
             fi
 
             # Other changes (chore, refactor, test, docs, etc.)
-            OTHER=$(git log "$RANGE" --oneline --no-merges --invert-grep --grep="^feat" --grep="^fix" 2>/dev/null \
-              | grep -Ev '^[a-f0-9]+ (bump version to|bump release metadata to)' || true)
+            OTHER=$(git log "$RANGE" --oneline --no-merges --invert-grep --grep="^feat" --grep="^fix" 2>/dev/null || true)
             if [ -n "$OTHER" ]; then
               echo "## 🔧 Other"
               echo "$OTHER" | sed 's/^[a-f0-9]* /- /'
