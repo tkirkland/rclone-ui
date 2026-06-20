@@ -143,8 +143,8 @@ jobs:
               -f name="${target_name}"
           }
 
-          rename_asset ".deb" "Rclone-UI-personal-v${PERSONAL_VERSION%-personal}-linux-x64.deb"
-          rename_asset ".rpm" "Rclone-UI-personal-v${PERSONAL_VERSION%-personal}-linux-x64.rpm"
+          rename_asset ".deb" "Rclone-UI-v${PERSONAL_VERSION%-personal}-linux-x64-personal.deb"
+          rename_asset ".rpm" "Rclone-UI-v${PERSONAL_VERSION%-personal}-linux-x64-personal.rpm"
 
   release-windows:
     needs: release-linux
@@ -209,4 +209,4 @@ jobs:
 
           asset_id="${api_url##*/}"
           gh api -X PATCH "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" \
-            -f name="Rclone-UI-personal-v${PERSONAL_VERSION%-personal}-windows-x64-setup.exe"
+            -f name="Rclone-UI-v${PERSONAL_VERSION%-personal}-windows-x64-personal-setup.exe"
