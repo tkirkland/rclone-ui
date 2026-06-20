@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  issues: write
 
 jobs:
   sync:
@@ -40,43 +41,39 @@ jobs:
             echo "main already matches sanitized upstream/main, nothing to mirror"
             echo "UPSTREAM_CHANGED=false" >> $GITHUB_ENV
           else
+            git log --reverse --oneline origin/main..upstream/main > "$GITHUB_WORKSPACE/upstream-commits.txt"
             git push origin "HEAD:refs/heads/main" --force-with-lease="refs/heads/main:$BEFORE"
             echo "UPSTREAM_CHANGED=true" >> $GITHUB_ENV
           fi
 
-      - name: Merge main into personal_changes
+      - name: Open upstream review issue
         if: env.UPSTREAM_CHANGED == 'true'
-        run: |
-          git fetch origin main
-          git checkout personal_changes
-
-          if git merge origin/main --no-edit; then
-            git push origin personal_changes
-            echo "MERGE_STATUS=success" >> $GITHUB_ENV
-          else
-            git merge --abort
-            echo "MERGE_STATUS=conflict" >> $GITHUB_ENV
-          fi
-
-      - name: Open sync PR on merge conflict
-        if: env.UPSTREAM_CHANGED == 'true' && env.MERGE_STATUS == 'conflict'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "::warning::Merge conflict detected — opening/refreshing sync PR."
+          TITLE="upstream changes need personal review"
+          COMMITS="$(cat "$GITHUB_WORKSPACE/upstream-commits.txt")"
+          BODY="$(cat <<EOF
+          Upstream changed and \`main\` was refreshed to the sanitized upstream mirror.
 
-          # Reuse existing open sync PR if one exists, otherwise create one.
-          EXISTING=$(gh pr list --base personal_changes --head main --state open --json number --jq '.[0].number')
+          Review these upstream commits and decide what should be cherry-picked into \`personal_changes\`:
+
+          \`\`\`
+          $COMMITS
+          \`\`\`
+
+          This issue is a notification only. Do not merge \`main\` into \`personal_changes\` blindly; \`personal_changes\` intentionally skips upstream repo/packaging changes that do not apply to this fork.
+          EOF
+          )"
+
+          EXISTING=$(gh issue list --state open --json number,title --jq ".[] | select(.title == \"$TITLE\") | .number" | head -n 1)
 
           if [ -n "$EXISTING" ]; then
-            echo "Existing sync PR #$EXISTING is still open — leaving it in place."
-            gh pr comment "$EXISTING" --body "Another upstream sync attempted on $(date -u +%Y-%m-%d) and still conflicts. Please resolve."
+            echo "Existing upstream review issue #$EXISTING is open — adding a fresh comment."
+            gh issue comment "$EXISTING" --body "$BODY"
           else
-            gh pr create \
-              --base personal_changes \
-              --head main \
-              --title "sync: upstream main has conflicts with personal_changes" \
-              --body "The nightly sync workflow could not auto-merge \`main\` (upstream mirror) into \`personal_changes\`.
-
-          Resolve the conflicts in the GitHub web editor or locally, then merge this PR. Once merged, the nightly sync will resume clean merges automatically."
+            gh issue create \
+              --title "$TITLE" \
+              --assignee "${{ github.repository_owner }}" \
+              --body "$BODY"
           fi
