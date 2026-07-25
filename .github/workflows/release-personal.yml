@@ -4,6 +4,12 @@ on:
   push:
     branches:
       - personal_changes
+    # CI config and docs do not affect the built app; use workflow_dispatch to
+    # test changes to this file. A commit touching both code and .github still builds.
+    paths-ignore:
+      - '.github/**'
+      - '**.md'
+      - 'LICENSE'
   workflow_dispatch:
 
 env:
