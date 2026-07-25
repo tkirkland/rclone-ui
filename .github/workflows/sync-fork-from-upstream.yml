@@ -14,6 +14,12 @@ jobs:
   sync:
     runs-on: ubuntu-latest
 
+    # The mirror step adds an "upstream" remote, and gh prefers a remote named
+    # "upstream" over "origin" when inferring the repo. Without this, every gh
+    # call below silently targets rclone-ui/rclone-ui instead of this fork.
+    env:
+      GH_REPO: ${{ github.repository }}
+
     steps:
       - name: Checkout personal_changes
         uses: actions/checkout@v4
@@ -84,6 +90,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # pipefail so a gh failure fails the step instead of being swallowed by the pipe
+          set -o pipefail
           # keep the 3 most recent completed runs; this run is still in progress so it is never a candidate
           gh run list --workflow "${{ github.workflow }}" --status completed --limit 100 \
             --json databaseId --jq '.[3:][].databaseId' |
