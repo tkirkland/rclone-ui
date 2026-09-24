@@ -1,14 +1,16 @@
 import { Divider, Kbd, ScrollShadow, cn } from '@heroui/react'
-import { useQuery } from '@tanstack/react-query'
+import { useQueries, useQuery } from '@tanstack/react-query'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { platform } from '@tauri-apps/plugin-os'
 import type { KeyboardEvent, MouseEvent as ReactMouseEvent } from 'react'
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useDebounce } from 'use-debounce'
+import { fsInfoQueryOptions } from '../../lib/hooks'
 import { fetchMountList, fetchServeList } from '../../lib/rclone/api'
 import rclone from '../../lib/rclone/client'
 import { openWindow } from '../../lib/window'
 import { type ResolvedToolbarResult, runToolbarEngine } from '../../toolbar/engine'
+import type { RcloneFeatures } from '../../types/rclone'
 
 const toolbarWindow = getCurrentWebviewWindow()
 const isWindows = platform() === 'windows'
@@ -111,6 +113,27 @@ export default function Toolbar() {
     const remotes = useMemo(() => remotesQuery.data ?? [], [remotesQuery.data])
     const remoteTypes = useMemo(() => remoteTypesQuery.data ?? {}, [remoteTypesQuery.data])
 
+    // Eager per-remote capability probes (operations/fsinfo), cached hard. Feeds the synchronous
+    // engine so cleanup/purge can gate on the authoritative feature set. Unresolved/unreachable
+    // remotes are simply absent from the map → those actions fall to their generic item.
+    //
+    // Built via `combine` (not a useMemo over the raw useQueries array) on purpose: react-query runs
+    // the combined value through replaceEqualDeep, so `capabilitiesByRemote` keeps a STABLE reference
+    // across renders until the capability data actually changes. A useMemo keyed on the useQueries
+    // result recomputed every render (that array is new each time), so the engine effect below re-ran
+    // and called setState on every render — an infinite update loop.
+    const capabilitiesByRemote = useQueries({
+        queries: remotes.map((remote) => fsInfoQueryOptions(remote)),
+        combine: (results) => {
+            const map: Record<string, RcloneFeatures> = {}
+            remotes.forEach((remote, i) => {
+                const features = results[i]?.data?.Features
+                if (features) map[remote] = features
+            })
+            return map
+        },
+    })
+
     const [searchString, setSearchString] = useState('')
     const [searchStringDebounced] = useDebounce(searchString, 40)
 
@@ -127,11 +150,24 @@ export default function Toolbar() {
         console.log(`${serveList?.length} serves`)
         console.log(`${vfsList?.length} vfses`)
 
-        const { results } = runToolbarEngine(searchStringDebounced, remotes, remoteTypes)
+        const { results } = runToolbarEngine(
+            searchStringDebounced,
+            remotes,
+            remoteTypes,
+            capabilitiesByRemote
+        )
         startTransition(() => {
             setEngineResults(results)
         })
-    }, [mountList, serveList, vfsList, searchStringDebounced, remotes, remoteTypes])
+    }, [
+        mountList,
+        serveList,
+        vfsList,
+        searchStringDebounced,
+        remotes,
+        remoteTypes,
+        capabilitiesByRemote,
+    ])
 
     useEffect(() => {
         let unlisten: (() => void) | undefined
@@ -463,10 +499,15 @@ export default function Toolbar() {
     }, [highlightedIndex, engineResults])
 
     return (
-        <div className="flex flex-col items-center justify-center w-full h-screen pb-[15vh]">
+        <div
+            className={cn(
+                'flex flex-col items-center justify-center w-full h-screen overflow-hidden',
+                !isWindows && 'pb-[15vh]'
+            )}
+        >
             <div
                 ref={activeAreaRef}
-                className="flex border-divider border flex-col items-center justify-center bg-content2/[0.97] w-[700px] rounded-large"
+                className="flex border-divider border flex-col items-center justify-center bg-content2/[0.97] w-full max-w-[700px] max-h-full rounded-large"
             >
                 <div
                     data-tauri-drag-region={true}
@@ -496,7 +537,10 @@ export default function Toolbar() {
 
                 <Divider />
 
-                <ScrollShadow className="h-[400px] w-full p-2" onMouseMove={handleMouseMove}>
+                <ScrollShadow
+                    className="h-[400px] min-h-0 w-full p-2"
+                    onMouseMove={handleMouseMove}
+                >
                     {engineResults.map((result, index) => {
                         const isActive = index === highlightedIndex
                         const elementId = `tb-result-${result.id.replace(ELEMENT_ID_REGEX, '-')}`

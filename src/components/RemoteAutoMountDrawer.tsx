@@ -8,7 +8,10 @@ import { message, open } from '@tauri-apps/plugin-dialog'
 import { platform } from '@tauri-apps/plugin-os'
 import { FolderOpen } from 'lucide-react'
 import { startTransition, useCallback, useEffect, useState } from 'react'
+import { onErrorDialog } from '../../lib/errors'
 import { useFlags } from '../../lib/hooks'
+import { RCLONE_CONFIG_DEFAULTS } from '../../lib/rclone/constants'
+import { AutomountSourceError, probeMountSource } from '../../lib/rclone/mount'
 import { lockWindows, unlockWindows } from '../../lib/window'
 import { type RemoteConfig, useHostStore } from '../../store/host'
 import OptionsSection from './OptionsSection'
@@ -52,14 +55,24 @@ export default function RemoteAutoMountDrawer({
             null,
             2
         )
-        const vfsOptionsJson = JSON.stringify(remoteConfig?.mountOnStart?.vfsOptions || {}, null, 2)
+        const savedVfsOptions = remoteConfig?.mountOnStart?.vfsOptions
+        const vfsOptionsJson = JSON.stringify(
+            savedVfsOptions && Object.keys(savedVfsOptions).length > 0
+                ? savedVfsOptions
+                : RCLONE_CONFIG_DEFAULTS.vfs,
+            null,
+            2
+        )
         const filterOptionsJson = JSON.stringify(
             remoteConfig?.mountOnStart?.filterOptions || {},
             null,
             2
         )
+        const savedConfigOptions = remoteConfig?.mountOnStart?.configOptions
         const configOptionsJson = JSON.stringify(
-            remoteConfig?.mountOnStart?.configOptions || {},
+            savedConfigOptions && Object.keys(savedConfigOptions).length > 0
+                ? savedConfigOptions
+                : RCLONE_CONFIG_DEFAULTS.config,
             null,
             2
         )
@@ -152,6 +165,17 @@ export default function RemoteAutoMountDrawer({
                 })
             }
 
+            if (newConfig.mountOnStart?.enabled && newConfig.mountOnStart.remotePath) {
+                try {
+                    await probeMountSource(`${remoteName}:${newConfig.mountOnStart.remotePath}`)
+                } catch (error) {
+                    if (error instanceof AutomountSourceError) {
+                        throw error
+                    }
+                    console.warn('[RemoteAutoMountDrawer] source probe inconclusive:', error)
+                }
+            }
+
             mergeRemoteConfig(remoteName, newConfig)
             return newConfig
         },
@@ -163,13 +187,10 @@ export default function RemoteAutoMountDrawer({
                 setButtonText('Save Changes')
             }, 1200)
         },
-        onError: async (error) => {
-            console.error('Failed to update remote:', error)
-            await message(error instanceof Error ? error.message : 'Unknown error occurred', {
-                title: 'Could not update remote',
-                kind: 'error',
-            })
-        },
+        onError: onErrorDialog('Could not update remote', 'Unknown error occurred', {
+            capture: false,
+            log: ['Failed to update remote:'],
+        }),
     })
 
     const setMountOnStart = useCallback(

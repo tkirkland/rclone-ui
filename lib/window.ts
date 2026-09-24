@@ -1,6 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
-import { platform } from '@tauri-apps/plugin-os'
 
 export async function openFullWindow({
     name,
@@ -11,7 +10,7 @@ export async function openFullWindow({
     url: string
     hideTitleBar?: boolean
 }) {
-    console.log('[openFullWindow] ', name, url)
+    console.log('[openFullWindow]', name)
     await invoke('open_full_window', { name, url, hideTitleBar })
     return WebviewWindow.getByLabel(name)
 }
@@ -20,7 +19,7 @@ export async function openWindow({
     name,
     url,
     width = 840,
-    height = platform() === 'windows' ? 755 : 725,
+    height = 725,
 }: {
     name: string
     url: string

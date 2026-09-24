@@ -8,17 +8,33 @@ import {
     DrawerContent,
     DrawerFooter,
     DrawerHeader,
+    Input,
     ScrollShadow,
+    Switch,
+    Tab,
+    Tabs,
+    Tooltip,
     cn,
 } from '@heroui/react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { platform } from '@tauri-apps/plugin-os'
-import CronExpressionParser from 'cron-parser'
-import { format } from 'date-fns'
-import { CalendarClockIcon } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { format, formatDistance } from 'date-fns'
+import { useEffect, useMemo, useState } from 'react'
+import { formatErrorMessage } from '../../lib/errors'
 import { buildReadablePath } from '../../lib/format'
+import { useNow } from '../../lib/hooks'
+import {
+    DEFAULT_MAX_RUN_HOURS,
+    MAX_RUN_HOURS_LIMIT,
+    schedulerReadHistory,
+    schedulerReadLog,
+    updateScheduledTask as schedulerUpdateTask,
+    schedulerValidateCron,
+} from '../../lib/scheduler'
 import { useHostStore } from '../../store/host'
 import type { ScheduledTask } from '../../types/schedules'
+import BinarySelect from './BinarySelect'
+import ConfigSelect, { configPasswordMissing as isConfigPasswordMissing } from './ConfigSelect'
 import CronEditor from './CronEditor'
 
 export default function ScheduleEditDrawer({
@@ -30,15 +46,41 @@ export default function ScheduleEditDrawer({
     onClose: () => void
     selectedTask: ScheduledTask
 }) {
-    const updateScheduledTask = useHostStore((state) => state.updateScheduledTask)
+    const queryClient = useQueryClient()
+    const configFiles = useHostStore((state) => state.configFiles)
 
+    const [name, setName] = useState(selectedTask.name ?? '')
     const [cronExpression, setCronExpression] = useState(selectedTask.cron)
+    const [configId, setConfigId] = useState(selectedTask.configId)
+    const [binaryPath, setBinaryPath] = useState(selectedTask.binaryPath)
+    const [isEnabled, setIsEnabled] = useState(selectedTask.isEnabled)
+    const [verboseLogging, setVerboseLogging] = useState(selectedTask.verboseLogging ?? false)
+    const [runMode, setRunMode] = useState<'system' | 'user'>(selectedTask.runMode ?? 'user')
+    const [maxRunHours, setMaxRunHours] = useState(
+        String(selectedTask.maxRunHours ?? DEFAULT_MAX_RUN_HOURS)
+    )
+    const [logView, setLogView] = useState<'runner' | 'daemon'>('runner')
+    const [saveError, setSaveError] = useState<string | null>(null)
 
     useEffect(() => {
         if (isOpen) {
+            setName(selectedTask.name ?? '')
             setCronExpression(selectedTask.cron)
+            setConfigId(selectedTask.configId)
+            setBinaryPath(selectedTask.binaryPath)
+            setIsEnabled(selectedTask.isEnabled)
+            setVerboseLogging(selectedTask.verboseLogging ?? false)
+            setRunMode(selectedTask.runMode ?? 'user')
+            setMaxRunHours(String(selectedTask.maxRunHours ?? DEFAULT_MAX_RUN_HOURS))
+            setSaveError(null)
         }
-    }, [isOpen, selectedTask.cron])
+    }, [isOpen, selectedTask])
+
+    const maxRunHoursNumber = Number(maxRunHours)
+    const maxRunHoursInvalid =
+        !Number.isInteger(maxRunHoursNumber) ||
+        maxRunHoursNumber < 1 ||
+        maxRunHoursNumber > MAX_RUN_HOURS_LIMIT
 
     const source = useMemo(
         () =>
@@ -51,30 +93,106 @@ export default function ScheduleEditDrawer({
         [selectedTask.args]
     )
 
-    const upcomingRuns = useMemo(() => {
-        try {
-            const parsed = CronExpressionParser.parse(cronExpression)
-            const runs: Date[] = []
-            for (let i = 0; i < 5; i++) {
-                if (parsed.hasNext()) {
-                    runs.push(parsed.next().toDate())
-                }
-            }
-            return runs
-        } catch {
-            return []
-        }
-    }, [cronExpression])
+    // The drawer stays mounted after close, so "the next 5 runs" must be re-anchored to the
+    // current time on every open (and kept fresh while open) — paused while closed.
+    const now = useNow(isOpen ? 30_000 : null)
 
-    const hasChanges = useMemo(
-        () => cronExpression !== selectedTask.cron,
-        [cronExpression, selectedTask.cron]
+    const cronValidation = useQuery({
+        queryKey: ['scheduler', 'validate-cron', cronExpression],
+        queryFn: () => schedulerValidateCron(cronExpression),
+        enabled: isOpen && !!cronExpression,
+        // The response carries the next-runs preview anchored at fetch time; without refetching,
+        // a frequent schedule (e.g. every minute) drains all 5 entries past `now` while the
+        // drawer sits open.
+        refetchInterval: 30_000,
+    })
+    const cronError =
+        cronValidation.data && !cronValidation.data.valid
+            ? (cronValidation.data.error ?? 'Invalid cron expression')
+            : null
+
+    const historyQuery = useQuery({
+        queryKey: ['scheduler', 'history', selectedTask.id],
+        queryFn: () => schedulerReadHistory(selectedTask.id, 10),
+        enabled: isOpen,
+        refetchInterval: 15_000,
+    })
+
+    const finishedRuns = useMemo(
+        () => (historyQuery.data ?? []).filter((line) => line.event === 'finished'),
+        [historyQuery.data]
     )
 
-    const handleSave = useCallback(() => {
-        updateScheduledTask(selectedTask.id, { cron: cronExpression })
-        onClose()
-    }, [selectedTask.id, cronExpression, updateScheduledTask, onClose])
+    const selectedConfig = useMemo(
+        () => configFiles.find((config) => config.id === configId) ?? null,
+        [configFiles, configId]
+    )
+    const configMissing = !selectedConfig
+    const configPasswordMissing = isConfigPasswordMissing(configFiles, configId)
+
+    // From the validation query, i.e. computed in Rust by the runner's own cron matcher — a JS
+    // library here can (and did) predict fires real cron never performs (dom/dow star flag).
+    // The `now` filter keeps the list fresh between refetches of the 30s-anchored query.
+    const upcomingRuns = useMemo(
+        () =>
+            (cronValidation.data?.nextRuns ?? [])
+                .map((run) => new Date(run))
+                .filter((run) => run.getTime() > now),
+        [cronValidation.data, now]
+    )
+
+    const hasChanges = useMemo(
+        () =>
+            name !== (selectedTask.name ?? '') ||
+            cronExpression !== selectedTask.cron ||
+            configId !== selectedTask.configId ||
+            binaryPath !== selectedTask.binaryPath ||
+            isEnabled !== selectedTask.isEnabled ||
+            verboseLogging !== (selectedTask.verboseLogging ?? false) ||
+            runMode !== (selectedTask.runMode ?? 'user') ||
+            maxRunHoursNumber !== (selectedTask.maxRunHours ?? DEFAULT_MAX_RUN_HOURS),
+        [
+            name,
+            cronExpression,
+            configId,
+            binaryPath,
+            isEnabled,
+            verboseLogging,
+            runMode,
+            maxRunHoursNumber,
+            selectedTask,
+        ]
+    )
+
+    const logQuery = useQuery({
+        queryKey: ['scheduler', 'log', selectedTask.id, logView],
+        queryFn: () => schedulerReadLog(selectedTask.id, logView),
+        enabled: isOpen,
+        refetchInterval: 5_000,
+    })
+
+    const saveMutation = useMutation({
+        mutationFn: async () => {
+            setSaveError(null)
+            await schedulerUpdateTask(selectedTask.id, {
+                name: name.trim(),
+                cron: cronExpression,
+                configId,
+                binaryPath,
+                isEnabled,
+                verboseLogging,
+                runMode,
+                maxRunHours: maxRunHoursNumber,
+            })
+        },
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['scheduler'] })
+            onClose()
+        },
+        onError: (error) => {
+            setSaveError(formatErrorMessage(error, 'Failed to save the schedule'))
+        },
+    })
 
     return (
         <Drawer
@@ -109,9 +227,6 @@ export default function ScheduleEditDrawer({
                                     >
                                         {selectedTask.operation.toUpperCase()}
                                     </Chip>
-                                    <p className="text-small text-foreground-500 line-clamp-1">
-                                        {selectedTask.name || 'Untitled Schedule'}
-                                    </p>
                                 </div>
                                 <Divider />
                             </div>
@@ -119,115 +234,233 @@ export default function ScheduleEditDrawer({
                         <DrawerBody className="py-0">
                             <ScrollShadow size={30} visibility="top">
                                 <div className="flex flex-col gap-6 pt-6 pb-10">
-                                    {selectedTask.lastRunError && (
+                                    {!!selectedTask.registrationError && (
                                         <Alert
                                             color="danger"
                                             variant="faded"
-                                            title="Last Run Error"
+                                            title="Not registered with the system scheduler"
                                         >
                                             <pre className="text-sm break-all whitespace-pre-wrap">
-                                                {selectedTask.lastRunError}
+                                                {selectedTask.registrationError}
+                                            </pre>
+                                        </Alert>
+                                    )}
+                                    {!!saveError && (
+                                        <Alert color="danger" variant="faded" title="Save failed">
+                                            <pre className="text-sm break-all whitespace-pre-wrap">
+                                                {saveError}
                                             </pre>
                                         </Alert>
                                     )}
 
-                                    <div className="flex flex-col gap-3">
-                                        <h3 className="text-lg font-medium">Details</h3>
-                                        <div className="grid grid-cols-2 gap-4">
-                                            <div className="flex flex-col gap-1">
-                                                <p className="text-sm text-foreground-500">
-                                                    Source
-                                                </p>
-                                                <p className="font-mono text-sm">
-                                                    {buildReadablePath(source, 'long')}
-                                                </p>
+                                    <div className="flex flex-col gap-6">
+                                        <div className="flex flex-row justify-center w-full gap-8">
+                                            <div className="flex flex-col items-end flex-1 gap-2">
+                                                <h4 className="font-medium">Enabled</h4>
                                             </div>
-                                            {destination && (
-                                                <div className="flex flex-col gap-1">
-                                                    <p className="text-sm text-foreground-500">
-                                                        Destination
-                                                    </p>
-                                                    <p className="font-mono text-sm">
-                                                        {buildReadablePath(destination, 'long')}
-                                                    </p>
-                                                </div>
-                                            )}
-                                            <div className="flex flex-col gap-1">
-                                                <p className="text-sm text-foreground-500">
-                                                    Last Run
-                                                </p>
-                                                <p className="text-sm">
-                                                    {selectedTask.lastRun
-                                                        ? format(
-                                                              new Date(selectedTask.lastRun),
-                                                              'PPpp'
-                                                          )
-                                                        : 'Never'}
-                                                </p>
-                                            </div>
-                                            <div className="flex flex-col gap-1">
-                                                <p className="text-sm text-foreground-500">
-                                                    Status
-                                                </p>
-                                                <Chip
+                                            <div className="flex flex-col w-3/5 gap-3">
+                                                <Switch
                                                     size="sm"
-                                                    variant="flat"
-                                                    color={
-                                                        selectedTask.isRunning
-                                                            ? 'success'
-                                                            : selectedTask.isEnabled
-                                                              ? 'primary'
-                                                              : 'warning'
-                                                    }
-                                                >
-                                                    {selectedTask.isRunning
-                                                        ? 'Running'
-                                                        : selectedTask.isEnabled
-                                                          ? 'Enabled'
-                                                          : 'Paused'}
-                                                </Chip>
+                                                    color="primary"
+                                                    isSelected={isEnabled}
+                                                    onValueChange={setIsEnabled}
+                                                    aria-label="Enabled"
+                                                    data-focus-visible="false"
+                                                />
                                             </div>
                                         </div>
-                                    </div>
 
-                                    <Divider />
+                                        <div className="flex flex-row justify-center w-full gap-8">
+                                            <div className="flex flex-col items-end flex-1 gap-2">
+                                                <h4 className="font-medium">Name</h4>
+                                            </div>
+                                            <div className="flex flex-col w-3/5 gap-3">
+                                                <Input
+                                                    aria-label="Schedule name"
+                                                    placeholder="Untitled Schedule"
+                                                    value={name}
+                                                    onValueChange={setName}
+                                                    autoCapitalize="off"
+                                                    autoComplete="off"
+                                                    autoCorrect="off"
+                                                    spellCheck="false"
+                                                    data-focus-visible="false"
+                                                />
+                                            </div>
+                                        </div>
 
-                                    <div className="flex flex-col gap-3">
-                                        <h3 className="flex items-center gap-2 text-lg font-medium">
-                                            <CalendarClockIcon className="w-5 h-5" />
-                                            Upcoming Runs
-                                        </h3>
-                                        {upcomingRuns.length > 0 ? (
-                                            <div className="flex flex-col gap-2">
-                                                {upcomingRuns.map((run, index) => (
-                                                    <div
-                                                        key={run.toISOString()}
-                                                        className="flex items-center gap-3 text-sm"
+                                        <div className="flex flex-row justify-center w-full gap-8">
+                                            <div className="flex flex-col items-end flex-1 gap-2">
+                                                <h4 className="font-medium">Source</h4>
+                                            </div>
+                                            <div className="flex flex-col w-3/5 gap-3">
+                                                <Tooltip
+                                                    content={
+                                                        <span className="font-mono break-all">
+                                                            {source}
+                                                        </span>
+                                                    }
+                                                    placement="top-start"
+                                                    color="foreground"
+                                                    className="max-w-md"
+                                                >
+                                                    <p className="font-mono text-sm break-all w-fit">
+                                                        {buildReadablePath(source, 'long')}
+                                                    </p>
+                                                </Tooltip>
+                                            </div>
+                                        </div>
+
+                                        {destination && (
+                                            <div className="flex flex-row justify-center w-full gap-8">
+                                                <div className="flex flex-col items-end flex-1 gap-2">
+                                                    <h4 className="font-medium">Destination</h4>
+                                                </div>
+                                                <div className="flex flex-col w-3/5 gap-3">
+                                                    <Tooltip
+                                                        content={
+                                                            <span className="font-mono break-all">
+                                                                {destination}
+                                                            </span>
+                                                        }
+                                                        placement="top-start"
+                                                        color="foreground"
+                                                        className="max-w-md"
                                                     >
-                                                        <Chip
-                                                            size="sm"
-                                                            variant="flat"
-                                                            color="default"
-                                                        >
-                                                            {index + 1}
-                                                        </Chip>
-                                                        <span>
-                                                            {format(run, 'EEEE, MMMM d, yyyy')}
-                                                        </span>
-                                                        <span className="text-foreground-500">
-                                                            at
-                                                        </span>
-                                                        <span className="font-mono">
-                                                            {format(run, 'HH:mm')}
+                                                        <p className="font-mono text-sm break-all w-fit">
+                                                            {buildReadablePath(destination, 'long')}
+                                                        </p>
+                                                    </Tooltip>
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        <div className="flex flex-row justify-center w-full gap-8">
+                                            <div className="flex flex-col items-end flex-1 gap-2">
+                                                <h4 className="font-medium">Config</h4>
+                                            </div>
+                                            <div className="flex flex-col w-3/5 gap-3">
+                                                <ConfigSelect
+                                                    configFiles={configFiles}
+                                                    value={configId}
+                                                    onChange={setConfigId}
+                                                    label=""
+                                                    placeholder={
+                                                        configMissing
+                                                            ? 'Config no longer exists'
+                                                            : undefined
+                                                    }
+                                                />
+                                                {configMissing && (
+                                                    <Alert color="danger" variant="faded" title="">
+                                                        The config this task used no longer exists —
+                                                        pick another one.
+                                                    </Alert>
+                                                )}
+                                                {configPasswordMissing && (
+                                                    <Alert
+                                                        color="warning"
+                                                        variant="faded"
+                                                        title="Encrypted config without a saved password"
+                                                    >
+                                                        This config is encrypted and has no saved
+                                                        password or password command. The scheduled
+                                                        runner cannot prompt for it, so runs will
+                                                        fail until you save the password in Settings
+                                                        → Config.
+                                                    </Alert>
+                                                )}
+                                            </div>
+                                        </div>
+
+                                        <div className="flex flex-row justify-center w-full gap-8">
+                                            <div className="flex flex-col items-end flex-1 gap-2">
+                                                <h4 className="font-medium">Binary</h4>
+                                            </div>
+                                            <div className="flex flex-col w-3/5 gap-3">
+                                                <BinarySelect
+                                                    value={binaryPath}
+                                                    onChange={(path) => {
+                                                        setSaveError(null)
+                                                        setBinaryPath(path)
+                                                    }}
+                                                    onError={setSaveError}
+                                                    label=""
+                                                />
+                                            </div>
+                                        </div>
+
+                                        <div className="flex flex-row justify-center w-full gap-8">
+                                            <div className="flex flex-col items-end flex-1 gap-2">
+                                                <h4 className="font-medium">Run mode</h4>
+                                            </div>
+                                            <div className="flex flex-col w-3/5 gap-1">
+                                                <Tabs
+                                                    size="sm"
+                                                    selectedKey={runMode}
+                                                    onSelectionChange={(key) =>
+                                                        setRunMode(key as 'system' | 'user')
+                                                    }
+                                                    data-focus-visible="false"
+                                                >
+                                                    <Tab key="user" title="User" />
+                                                    <Tab key="system" title="System" />
+                                                </Tabs>
+                                                <span className="text-tiny text-default-400">
+                                                    {runMode === 'user'
+                                                        ? `Runs only while you are logged in, inside your session. OS keychain passwords and session-mounted drives work; fires while logged out are skipped.${platform() === 'macos' ? ' On macOS it runs as Rclone UI, so protected folders work once you grant the app access.' : ''}`
+                                                        : `Runs even while logged out, but outside your login session. No OS keychain or session-mounted drives.${platform() === 'macos' ? ' To read protected folders (Desktop, Documents, Downloads) or external volumes, grant Full Disk Access to /usr/sbin/cron in System Settings → Privacy & Security.' : ''}`}
+                                                </span>
+                                            </div>
+                                        </div>
+
+                                        <div className="flex flex-row justify-center w-full gap-8">
+                                            <div className="flex flex-col items-end flex-1 gap-2">
+                                                <h4 className="font-medium">Logging</h4>
+                                            </div>
+                                            <div className="flex flex-col w-3/5 gap-3">
+                                                <Switch
+                                                    size="sm"
+                                                    color="primary"
+                                                    isSelected={verboseLogging}
+                                                    onValueChange={setVerboseLogging}
+                                                    data-focus-visible="false"
+                                                >
+                                                    <div className="flex flex-col">
+                                                        <span className="text-small">Verbose</span>
+                                                        <span className="text-tiny text-default-400">
+                                                            Log individual transfers to the rclone
+                                                            log
                                                         </span>
                                                     </div>
-                                                ))}
+                                                </Switch>
                                             </div>
-                                        ) : (
-                                            <p className="text-sm text-foreground-500">
-                                                No upcoming runs scheduled (invalid cron expression)
-                                            </p>
-                                        )}
+                                        </div>
+
+                                        <div className="flex flex-row justify-center w-full gap-8">
+                                            <div className="flex flex-col items-end flex-1 gap-2">
+                                                <h4 className="font-medium">Max run time</h4>
+                                            </div>
+                                            <div className="flex flex-col w-3/5 gap-2">
+                                                <Input
+                                                    type="number"
+                                                    aria-label="Max run time in hours"
+                                                    endContent={
+                                                        <span className="text-small text-default-400">
+                                                            hours
+                                                        </span>
+                                                    }
+                                                    min={1}
+                                                    max={MAX_RUN_HOURS_LIMIT}
+                                                    value={maxRunHours}
+                                                    onValueChange={setMaxRunHours}
+                                                    isInvalid={maxRunHoursInvalid}
+                                                    errorMessage={`Enter a whole number of hours between 1 and ${MAX_RUN_HOURS_LIMIT}`}
+                                                    className="max-w-36"
+                                                    data-focus-visible="false"
+                                                />
+                                            </div>
+                                        </div>
                                     </div>
 
                                     <Divider />
@@ -239,7 +472,140 @@ export default function ScheduleEditDrawer({
                                             onChange={(expr) =>
                                                 setCronExpression(expr || '* * * * *')
                                             }
+                                            error={cronError}
                                         />
+                                    </div>
+
+                                    <Divider />
+
+                                    <div className="flex flex-col gap-3">
+                                        <h3 className="text-lg font-medium">Upcoming Runs</h3>
+                                        {upcomingRuns.length > 0 ? (
+                                            <div className="flex flex-row justify-between">
+                                                <div className="flex flex-col gap-2">
+                                                    {upcomingRuns.slice(0, 5).map((run, index) => (
+                                                        <UpcomingRunRow
+                                                            key={run.toISOString()}
+                                                            run={run}
+                                                            index={index}
+                                                        />
+                                                    ))}
+                                                </div>
+                                                {upcomingRuns.length > 5 && (
+                                                    <div className="flex flex-col gap-2">
+                                                        {upcomingRuns
+                                                            .slice(5, 10)
+                                                            .map((run, index) => (
+                                                                <UpcomingRunRow
+                                                                    key={run.toISOString()}
+                                                                    run={run}
+                                                                    index={index + 5}
+                                                                />
+                                                            ))}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        ) : (
+                                            <p className="text-sm text-foreground-500">
+                                                No upcoming runs scheduled (invalid cron expression)
+                                            </p>
+                                        )}
+                                    </div>
+
+                                    <Divider />
+
+                                    <div className="flex flex-col gap-3">
+                                        <h3 className="text-lg font-medium">Run History</h3>
+                                        {finishedRuns.length > 0 ? (
+                                            <div className="flex flex-col gap-2">
+                                                {finishedRuns.map((run) =>
+                                                    run.event === 'finished' ? (
+                                                        <div
+                                                            key={run.runId}
+                                                            className="flex items-center gap-3 text-sm"
+                                                        >
+                                                            <Chip
+                                                                size="sm"
+                                                                variant="flat"
+                                                                color={
+                                                                    run.success
+                                                                        ? 'success'
+                                                                        : 'danger'
+                                                                }
+                                                            >
+                                                                {run.success ? 'OK' : 'Failed'}
+                                                            </Chip>
+                                                            <span>
+                                                                {formatDistance(
+                                                                    new Date(run.ts),
+                                                                    new Date(now),
+                                                                    { addSuffix: true }
+                                                                )}
+                                                            </span>
+                                                            <span className="text-foreground-500">
+                                                                {Math.round(run.durationMs / 1000)}s
+                                                            </span>
+                                                            {!!run.error && (
+                                                                <span className="text-danger-500 line-clamp-1">
+                                                                    {run.error}
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                    ) : null
+                                                )}
+                                            </div>
+                                        ) : (
+                                            <p className="text-sm text-foreground-500">
+                                                This task hasn't run yet.
+                                            </p>
+                                        )}
+                                    </div>
+
+                                    <Divider />
+
+                                    <div className="flex flex-col gap-3">
+                                        <div className="flex items-center justify-between">
+                                            <h3 className="text-lg font-medium">Logs</h3>
+                                            <div className="flex gap-1">
+                                                <Button
+                                                    size="sm"
+                                                    variant={
+                                                        logView === 'runner' ? 'solid' : 'light'
+                                                    }
+                                                    color={
+                                                        logView === 'runner' ? 'primary' : 'default'
+                                                    }
+                                                    onPress={() => setLogView('runner')}
+                                                    data-focus-visible="false"
+                                                >
+                                                    Runner
+                                                </Button>
+                                                <Button
+                                                    size="sm"
+                                                    variant={
+                                                        logView === 'daemon' ? 'solid' : 'light'
+                                                    }
+                                                    color={
+                                                        logView === 'daemon' ? 'primary' : 'default'
+                                                    }
+                                                    onPress={() => setLogView('daemon')}
+                                                    data-focus-visible="false"
+                                                >
+                                                    rclone
+                                                </Button>
+                                            </div>
+                                        </div>
+                                        {logQuery.data?.truncated && (
+                                            <p className="text-tiny text-default-400">
+                                                Showing the last 64 KB — older lines are on disk.
+                                            </p>
+                                        )}
+                                        <pre className="p-3 overflow-auto font-mono whitespace-pre-wrap rounded-medium bg-content2 text-tiny max-h-64">
+                                            {logQuery.data?.content ||
+                                                (logView === 'runner'
+                                                    ? 'No runner output yet.'
+                                                    : 'No rclone output yet.')}
+                                        </pre>
                                     </div>
                                 </div>
                             </ScrollShadow>
@@ -255,8 +621,14 @@ export default function ScheduleEditDrawer({
                             </Button>
                             <Button
                                 color="primary"
-                                isDisabled={!hasChanges}
-                                onPress={handleSave}
+                                isDisabled={
+                                    !hasChanges ||
+                                    !!cronError ||
+                                    configMissing ||
+                                    maxRunHoursInvalid
+                                }
+                                isLoading={saveMutation.isPending}
+                                onPress={() => saveMutation.mutate()}
                                 data-focus-visible="false"
                             >
                                 SAVE CHANGES
@@ -266,5 +638,18 @@ export default function ScheduleEditDrawer({
                 )}
             </DrawerContent>
         </Drawer>
+    )
+}
+
+function UpcomingRunRow({ run, index }: { run: Date; index: number }) {
+    return (
+        <div className="flex items-center gap-3 text-sm">
+            <Chip size="sm" variant="flat" color="default">
+                {index + 1}
+            </Chip>
+            <span>{format(run, 'EEEE, MMMM d, yyyy')}</span>
+            <span className="text-foreground-500">at</span>
+            <span className="font-mono">{format(run, 'HH:mm')}</span>
+        </div>
     )
 }

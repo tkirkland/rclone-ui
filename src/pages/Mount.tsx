@@ -28,6 +28,7 @@ import {
 } from 'lucide-react'
 import { startTransition, useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
+import { reportError } from '../../lib/errors'
 import { getOptionsSubtitle } from '../../lib/flags'
 import { useFlags } from '../../lib/hooks'
 import { startMount } from '../../lib/rclone/api'
@@ -164,13 +165,11 @@ export default function Mount() {
             }
             console.log('[Mount] Mount plugin installed, but failed to start mount')
             console.error('Failed to start mount:', error)
-            await message(
-                error instanceof Error ? error.message : 'Failed to start mount operation',
-                {
-                    title: 'Mount Error',
-                    kind: 'error',
-                }
-            )
+            await reportError(error, {
+                title: 'Mount Error',
+                fallback: 'Failed to start mount operation',
+                capture: false,
+            })
         },
     })
 
@@ -308,18 +307,54 @@ export default function Mount() {
                         startTransition(() => {
                             if (shouldMerge) {
                                 if (groupedOptions.mount)
-                                    setMountOptionsJsonString(JSON.stringify({ ...mountOptions, ...groupedOptions.mount }, null, 2))
+                                    setMountOptionsJsonString(
+                                        JSON.stringify(
+                                            { ...mountOptions, ...groupedOptions.mount },
+                                            null,
+                                            2
+                                        )
+                                    )
                                 if (groupedOptions.vfs)
-                                    setVfsOptionsJsonString(JSON.stringify({ ...vfsOptions, ...groupedOptions.vfs }, null, 2))
+                                    setVfsOptionsJsonString(
+                                        JSON.stringify(
+                                            { ...vfsOptions, ...groupedOptions.vfs },
+                                            null,
+                                            2
+                                        )
+                                    )
                                 if (groupedOptions.filter)
-                                    setFilterOptionsJsonString(JSON.stringify({ ...filterOptions, ...groupedOptions.filter }, null, 2))
+                                    setFilterOptionsJsonString(
+                                        JSON.stringify(
+                                            { ...filterOptions, ...groupedOptions.filter },
+                                            null,
+                                            2
+                                        )
+                                    )
                                 if (groupedOptions.config)
-                                    setConfigOptionsJsonString(JSON.stringify({ ...configOptions, ...groupedOptions.config }, null, 2))
+                                    setConfigOptionsJsonString(
+                                        JSON.stringify(
+                                            { ...configOptions, ...groupedOptions.config },
+                                            null,
+                                            2
+                                        )
+                                    )
                             } else {
-                                if (groupedOptions.mount) setMountOptionsJsonString(JSON.stringify(groupedOptions.mount, null, 2))
-                                if (groupedOptions.vfs) setVfsOptionsJsonString(JSON.stringify(groupedOptions.vfs, null, 2))
-                                if (groupedOptions.filter) setFilterOptionsJsonString(JSON.stringify(groupedOptions.filter, null, 2))
-                                if (groupedOptions.config) setConfigOptionsJsonString(JSON.stringify(groupedOptions.config, null, 2))
+                                if (groupedOptions.mount)
+                                    setMountOptionsJsonString(
+                                        JSON.stringify(groupedOptions.mount, null, 2)
+                                    )
+                                if (groupedOptions.vfs)
+                                    setVfsOptionsJsonString(
+                                        JSON.stringify(groupedOptions.vfs, null, 2)
+                                    )
+                                if (groupedOptions.filter)
+                                    setFilterOptionsJsonString(
+                                        JSON.stringify(groupedOptions.filter, null, 2)
+                                    )
+                                if (groupedOptions.config)
+                                    setConfigOptionsJsonString(
+                                        JSON.stringify(groupedOptions.config, null, 2)
+                                    )
                             }
                         })
                     }}
@@ -499,9 +534,9 @@ export default function Mount() {
                         </Button>
                     </Tooltip>
                     <CommandInfoButton
-                        content={`Mounts a remote as a local file system using FUSE.
+                        content={`Mounts a remote as a local file system.
 
-Mount allows you to access any of rclone's cloud storage systems as if they were a local folder on your computer. Files appear in your file browser and can be opened directly by applications. This requires FUSE support on your system (macFUSE on macOS, WinFsp on Windows).
+Mount allows you to access any of rclone's cloud storage systems as if they were a local folder on your computer. Files appear in your file browser and can be opened directly by applications. On Windows this requires WinFsp; macOS mounts use the system's built-in NFS client, so no extra software is needed.
 
 On Linux/macOS/FreeBSD, the mount point must be an empty existing directory. On Windows, you can mount to an unused drive letter, or to a path representing a nonexistent subdirectory of an existing parent directory.
 

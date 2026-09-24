@@ -18,14 +18,12 @@ pub fn make_transparent(window: &WebviewWindow) -> Result<(), tauri::Error> {
         let ns_window: id = msg_send![webview_obj, window];
         let bg_color = NSColor::colorWithSRGBRed_green_blue_alpha_(nil, 0.0, 0.0, 0.0, 0.0);
         let _: id = msg_send![ns_window, setBackgroundColor: bg_color];
-        // let _: () = msg_send![ns_window, setIgnoresMouseEvents:true];
     })?;
 
     Ok(())
 }
 
 #[cfg(not(target_os = "macos"))]
-#[allow(dead_code)]
 pub fn make_transparent(_window: &WebviewWindow) -> Result<(), tauri::Error> {
     Ok(())
 }
@@ -55,7 +53,16 @@ pub(crate) fn focus_window_linux(app_handle: &AppHandle, window: &WebviewWindow)
     let _ = app_handle.run_on_main_thread(move || {
         use gtk::prelude::*;
         if let Ok(gtk_win) = window_clone.gtk_window() {
-            gtk_win.present_with_time(gtk::current_event_time());
+            let mut time = gtk::current_event_time();
+            if time == 0 {
+                if let Some(x11_win) = gtk_win
+                    .window()
+                    .and_then(|w| w.downcast::<gdkx11::X11Window>().ok())
+                {
+                    time = gdkx11::functions::x11_get_server_time(&x11_win);
+                }
+            }
+            gtk_win.present_with_time(time);
         }
     });
 }
@@ -94,7 +101,6 @@ pub async fn open_full_window(
         height -= 100.0;
     }
 
-    #[allow(unused_mut)]
     let mut builder = WebviewWindowBuilder::new(&app_handle, &name, WebviewUrl::App(url.into()))
         .title(&name)
         .inner_size(width, height)
@@ -157,22 +163,32 @@ pub async fn open_window(
 ) -> Result<(), String> {
     if let Some(existing) = app_handle.get_webview_window(&name) {
         existing.set_focus().map_err(|e| e.to_string())?;
-        #[cfg(target_os = "linux")]
-        focus_window_linux(&app_handle, &existing);
         return Ok(());
     }
 
-	let os = std::env::consts::OS;
-
-    let default_height = if os == "windows" { 755.0 } else { 725.0 };
     let width = width.unwrap_or(840.0);
-    let height = height.unwrap_or(default_height);
+    let height = height.unwrap_or(725.0);
 
-    #[allow(unused_mut)]
+    #[cfg(target_os = "windows")]
+    let (width, height) = {
+        let monitor = match app_handle.primary_monitor().map_err(|e| e.to_string())? {
+            Some(monitor) => monitor,
+            None => app_handle
+                .available_monitors()
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .next()
+                .ok_or("No monitors available")?,
+        };
+
+        let scale_factor = monitor.scale_factor();
+        (width / scale_factor, height / scale_factor)
+    };
+
     let mut builder = WebviewWindowBuilder::new(&app_handle, &name, WebviewUrl::App(url.into()))
         .title(&name)
         .inner_size(width, height)
-        .min_inner_size(700.0, 700.0)
+        .min_inner_size(650.0, 500.0)
         .max_inner_size(1000.0, 1000.0)
         .resizable(true)
         .visible(false)
@@ -289,7 +305,6 @@ pub async fn open_small_window(
         return Ok(());
     }
 
-    #[allow(unused_mut)]
     let mut builder = WebviewWindowBuilder::new(&app_handle, &name, WebviewUrl::App(url.into()))
         .title(&name)
         .inner_size(800.0, 500.0)
@@ -308,7 +323,8 @@ pub async fn open_small_window(
 
 	#[cfg(target_os = "linux")]
     {
-        builder = builder.transparent(true);
+        // Transparent WebKitGTK windows can fail to render with Wayland DMA-BUF backends.
+        builder = builder.transparent(false);
     }
 
     let window = builder.build().map_err(|e| e.to_string())?;

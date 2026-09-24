@@ -26,11 +26,12 @@ dist-ssr
 .env*
 !.env.example
 .cursorignore
-.claude/settings.local.json
 .work
 .work/*
 scripts/release.md
 src-tauri/binaries/*
 !src-tauri/binaries/.gitkeep
 /public/out.js
+video
+.claude/settings.local.json
 .vs/

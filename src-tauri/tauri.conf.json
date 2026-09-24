@@ -2,7 +2,7 @@
     "$schema": "https://schema.tauri.app/config/2",
     "productName": "Rclone UI",
     "mainBinaryName": "Rclone UI",
-    "version": "3.6.1",
+    "version": "3.7.5",
     "identifier": "com.rclone.ui",
     "build": {
         "frontendDist": "../dist",
@@ -14,15 +14,15 @@
         "windows": [
             {
                 "title": "Rclone UI",
-                "width": 0,
-                "height": 0,
+                "width": 1,
+                "height": 1,
                 "center": true,
                 "hiddenTitle": false,
                 "resizable": false,
                 "fullscreen": false,
                 "visible": false,
                 "decorations": false,
-                "focus": true,
+                "focus": false,
                 "url": "tray.html",
                 "alwaysOnTop": true,
                 "backgroundThrottling": "disabled",
@@ -79,7 +79,8 @@
             "deb": {
                 "depends": [
                     "libayatana-appindicator3-1 | libappindicator3-1",
-                    "zenity | kdialog | yad"
+                    "zenity | kdialog | yad",
+                    "cron | cron-daemon"
                 ],
                 "files": {
                     "/usr/share/flatpak.metainfo.xml": "flatpak.metainfo.xml"
@@ -88,7 +89,8 @@
             "rpm": {
                 "depends": [
                     "(libappindicator-gtk3 or libayatana-appindicator-gtk3)",
-                    "(zenity or kdialog or yad)"
+                    "(zenity or kdialog or yad)",
+                    "(cronie or cron)"
                 ]
             }
         },

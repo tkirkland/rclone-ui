@@ -1,37 +1,89 @@
+import { Button, Divider, Drawer, DrawerBody, DrawerContent, DrawerHeader, cn } from '@heroui/react'
 import {
-    Button,
-    Divider,
-    Drawer,
-    DrawerBody,
-    DrawerContent,
-    DrawerHeader,
-    Spinner,
-} from '@heroui/react'
-import { DownloadIcon, FileIcon as FileIconLucide, XIcon } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { formatBytes } from '../../../lib/format.ts'
-import { usePersistedStore } from '../../../store/persisted.ts'
-import FileIcon, { getFileType, isPreviewable } from './FileIcon'
-import type { Entry } from './types'
+    DownloadIcon,
+    FileIcon as FileIconLucide,
+    Maximize2Icon,
+    Minimize2Icon,
+    XIcon,
+} from 'lucide-react'
+import {
+    type ComponentType,
+    type LazyExoticComponent,
+    Suspense,
+    lazy,
+    useCallback,
+    useMemo,
+    useState,
+} from 'react'
+import { formatBytes } from '../../../../lib/format.ts'
+import { useCurrentHost } from '../../../../store/persisted.ts'
+import FileIcon, { getFileType, isPreviewable } from '../FileIcon'
+import type { Entry } from '../types'
+import { getFileExtension } from '../utils'
+import { PreviewLoading, type PreviewViewerProps } from './previewStates'
+
+// Lazy-loaded so each viewer's heavy WASM/WebGL bundle only loads when a matching
+// file is actually opened, keeping them out of the main + Commander bundle.
+const PdfPreview = lazy(() => import('./PdfPreview'))
+const DocxPreview = lazy(() => import('./DocxPreview'))
+const XlsxPreview = lazy(() => import('./XlsxPreview'))
+const PptxPreview = lazy(() => import('./PptxPreview'))
+// CodeMirror + its ~140 bundled languages are heavy; keep them out of the main chunk too.
+const CodeMirrorPreview = lazy(() => import('./CodeMirrorPreview'))
+
+// Text-like file types (plus .csv) render in the CodeMirror viewer.
+const CODE_VIEWER_TYPES = new Set(['text', 'code', 'config'])
+
+// Documents route to a dedicated inline viewer by extension; any other extension
+// falls through to the media/text switch or the download fallback below.
+const DOCUMENT_VIEWERS: Record<string, LazyExoticComponent<ComponentType<PreviewViewerProps>>> = {
+    pdf: PdfPreview,
+    docx: DocxPreview,
+    xlsx: XlsxPreview,
+    ppt: PptxPreview,
+    pptx: PptxPreview,
+}
 
 const TRAILING_SLASH_RE = /\/$/
+const LEADING_SLASHES_RE = /^\/+/
+const WINDOWS_DRIVE_RE = /^([a-zA-Z]:\/)/
 const MAX_PREVIEW_SIZE = 500_000_000
+
+// The daemon runs with `--rc-serve`, exposing objects at `/[fs]/remote/path` where
+// `[fs]` is an rclone connection string. The local filesystem must be addressed via
+// the `:local:` backend rooted at the filesystem root — the same fs the app uses for
+// local `/operations/list` calls (see searchPath()/getFsInfo()). A bare `[local]`
+// names a non-existent remote, so local previews 404'd while remotes worked.
+function buildLocalFs(fullPath: string): { fs: string; path: string } {
+    const normalized = fullPath.replace(/\\/g, '/')
+    const drive = normalized.match(WINDOWS_DRIVE_RE)
+    if (drive) {
+        // e.g. C:/Users/x → fs ":local:C:/", path "Users/x"
+        return {
+            fs: `:local:${drive[1]}`,
+            path: normalized.slice(drive[0].length).replace(LEADING_SLASHES_RE, ''),
+        }
+    }
+    // POSIX absolute path → local backend rooted at "/", path relative to it.
+    return { fs: ':local:/', path: normalized.replace(LEADING_SLASHES_RE, '') }
+}
 
 function buildPreviewUrl(entry: Entry, hostUrl: string, auth?: string): string {
     const normalizedHost = hostUrl.replace(TRAILING_SLASH_RE, '')
 
+    let url: string
     if (entry.remote === 'UI_LOCAL_FS') {
-        return `${normalizedHost}/[local]/${entry.fullPath}`
+        const { fs, path } = buildLocalFs(entry.fullPath)
+        url = `${normalizedHost}/[${fs}]/${path}`
+    } else {
+        const pathPart = entry.fullPath.includes(':/')
+            ? entry.fullPath.split(':/').slice(1).join('/')
+            : entry.fullPath
+        url = `${normalizedHost}/[${entry.remote}:]/${pathPart}`
     }
 
-    const pathPart = entry.fullPath.includes(':/')
-        ? entry.fullPath.split(':/').slice(1).join('/')
-        : entry.fullPath
-
-    const url = `${normalizedHost}/[${entry.remote}:]/${pathPart}`
-
     if (auth) {
-        return `${url}?auth=${encodeURIComponent(auth)}`
+        url = `${url}?auth=${encodeURIComponent(auth)}`
     }
 
     return url
@@ -44,14 +96,13 @@ export default function PreviewDrawer({
     item: Entry | null
     onClose: () => void
 }) {
-    const currentHost = usePersistedStore((state) => state.currentHost)
+    const currentHost = useCurrentHost()
     const hostUrl = currentHost?.url
     const authUser = currentHost?.authUser
     const authPassword = currentHost?.authPassword
 
-    const [textContent, setTextContent] = useState<string | null>(null)
-    const [isLoadingText, setIsLoadingText] = useState(false)
-    const [textError, setTextError] = useState<string | null>(null)
+    // When expanded, the drawer widens to ~90% of the window (the Commander).
+    const [expanded, setExpanded] = useState(false)
 
     const auth = useMemo(() => {
         if (authUser) {
@@ -59,6 +110,8 @@ export default function PreviewDrawer({
         }
         return undefined
     }, [authUser, authPassword])
+
+    const authHeader = auth ? `Basic ${auth}` : undefined
 
     const fileType = item ? getFileType(item) : 'unknown'
     const canPreview = item ? isPreviewable(item) : false
@@ -71,43 +124,15 @@ export default function PreviewDrawer({
         return buildPreviewUrl(item, hostUrl, auth)
     }, [item, hostUrl, auth])
 
-    useEffect(() => {
-        if (!item || fileType !== 'text' || !previewUrl || isTooLarge) {
-            setTextContent(null)
-            setTextError(null)
-            return
-        }
-
-        const abortController = new AbortController()
-
-        setIsLoadingText(true)
-        setTextError(null)
-
-        fetch(previewUrl, {
-            headers: auth ? { Authorization: `Basic ${auth}` } : undefined,
-            signal: abortController.signal,
-        })
-            .then((res) => {
-                if (!res.ok) throw new Error(`HTTP ${res.status}`)
-                return res.text()
-            })
-            .then((text) => {
-                setTextContent(text)
-                setIsLoadingText(false)
-            })
-            .catch((err: Error) => {
-                if (abortController.signal.aborted) return
-                setTextError(err.message)
-                setIsLoadingText(false)
-            })
-
-        return () => abortController.abort()
-    }, [item, fileType, previewUrl, auth, isTooLarge])
-
     const handleDownload = useCallback(() => {
         if (!previewUrl) return
         window.open(previewUrl, '_blank')
     }, [previewUrl])
+
+    const handleClose = useCallback(() => {
+        setExpanded(false)
+        onClose()
+    }, [onClose])
 
     const renderPreview = () => {
         if (!item || !previewUrl) {
@@ -138,19 +163,51 @@ export default function PreviewDrawer({
             )
         }
 
+        // Shown for types we can't render inline (and for the sub-formats of an
+        // otherwise-previewable type that this viewer doesn't handle, e.g. .odt / .csv).
+        const unsupportedFallback = (
+            <div className="flex flex-col items-center justify-center h-full gap-4 text-default-500">
+                <FileIcon entry={item} size="lg" />
+                <p>Preview not available for this file type</p>
+                <Button
+                    color="primary"
+                    onPress={handleDownload}
+                    startContent={<DownloadIcon className="size-4" />}
+                >
+                    Download
+                </Button>
+            </div>
+        )
+
         if (!canPreview) {
+            return unsupportedFallback
+        }
+
+        // Documents (pdf/docx/xlsx/pptx) route to their dedicated inline viewer;
+        // unsupported document sub-formats (e.g. .odt) fall through to download.
+        const ext = getFileExtension(item.name)
+        const DocumentViewer = DOCUMENT_VIEWERS[ext]
+        if (DocumentViewer) {
             return (
-                <div className="flex flex-col items-center justify-center h-full gap-4 text-default-500">
-                    <FileIcon entry={item} size="lg" />
-                    <p>Preview not available for this file type</p>
-                    <Button
-                        color="primary"
-                        onPress={handleDownload}
-                        startContent={<DownloadIcon className="size-4" />}
-                    >
-                        Download
-                    </Button>
-                </div>
+                <DocumentViewer
+                    url={previewUrl}
+                    name={item.name}
+                    authHeader={authHeader}
+                    onDownload={handleDownload}
+                />
+            )
+        }
+
+        // Text, code and config files — plus .csv (classified as a spreadsheet, but we
+        // show it as delimited text) — render in the CodeMirror viewer.
+        if (CODE_VIEWER_TYPES.has(fileType) || ext === 'csv') {
+            return (
+                <CodeMirrorPreview
+                    url={previewUrl}
+                    name={item.name}
+                    authHeader={authHeader}
+                    onDownload={handleDownload}
+                />
             )
         }
 
@@ -193,37 +250,6 @@ export default function PreviewDrawer({
                     </div>
                 )
 
-            case 'text': {
-                if (isLoadingText) {
-                    return (
-                        <div className="flex items-center justify-center w-full h-full">
-                            <Spinner size="lg" />
-                        </div>
-                    )
-                }
-                if (textError) {
-                    return (
-                        <div className="flex flex-col items-center justify-center h-full gap-4 text-danger">
-                            <p>Error loading file: {textError}</p>
-                        </div>
-                    )
-                }
-                return (
-                    <div className="w-full h-full p-4 overflow-auto">
-                        <pre className="p-4 font-mono text-sm break-words whitespace-pre-wrap rounded-lg bg-default-100">
-                            {textContent}
-                        </pre>
-                    </div>
-                )
-            }
-
-            case 'document':
-                return (
-                    <div className="flex flex-col items-center w-full h-full p-4 overflow-auto">
-                        {/* PDF preview disabled - uncomment when react-pdf is configured */}
-                    </div>
-                )
-
             default:
                 return (
                     <div className="flex flex-col items-center justify-center h-full gap-4 text-default-500">
@@ -246,23 +272,51 @@ export default function PreviewDrawer({
             isOpen={!!item}
             placement="right"
             size="md"
-            onClose={onClose}
+            onClose={handleClose}
             hideCloseButton={true}
+            classNames={{
+                base: cn(
+                    'transition-[max-width] duration-300 ease-in-out',
+                    expanded && '!max-w-[97vw]'
+                ),
+            }}
         >
             <DrawerContent>
                 <DrawerHeader className="flex items-center justify-between mt-4">
                     <div className="flex items-center gap-2 overflow-hidden">
-                        {item && <FileIcon entry={item} size="md" />}
+                        {item && (
+                            <button
+                                type="button"
+                                onClick={() => setExpanded((value) => !value)}
+                                aria-label={expanded ? 'Collapse preview' : 'Expand preview'}
+                                className="relative grid shrink-0 cursor-pointer size-5 group place-items-center"
+                            >
+                                {/* File icon by default; hard-swaps to a maximize/
+                                    minimize affordance on hover (only one is ever shown). */}
+                                <span className="col-start-1 row-start-1 group-hover:hidden">
+                                    <FileIcon entry={item} size="md" />
+                                </span>
+                                <span className="hidden col-start-1 row-start-1 group-hover:block">
+                                    {expanded ? (
+                                        <Minimize2Icon className="size-4" />
+                                    ) : (
+                                        <Maximize2Icon className="size-4" />
+                                    )}
+                                </span>
+                            </button>
+                        )}
                         <span className="font-medium truncate">{item?.name ?? 'Preview'}</span>
                     </div>
-                    <Button isIconOnly={true} size="sm" variant="light" onPress={onClose}>
+                    <Button isIconOnly={true} size="sm" variant="light" onPress={handleClose}>
                         <XIcon className="size-5" />
                     </Button>
                 </DrawerHeader>
                 <Divider />
                 <DrawerBody className="p-0">
                     <div className="flex flex-col h-full">
-                        <div className="flex-1 overflow-hidden">{renderPreview()}</div>
+                        <div className="relative flex-1 overflow-hidden">
+                            <Suspense fallback={<PreviewLoading />}>{renderPreview()}</Suspense>
+                        </div>
 
                         {item && (
                             <>

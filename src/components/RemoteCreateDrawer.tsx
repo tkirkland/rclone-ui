@@ -5,9 +5,10 @@ import { message } from '@tauri-apps/plugin-dialog'
 import { platform } from '@tauri-apps/plugin-os'
 import { ChevronDown, ChevronUp, RefreshCcwIcon } from 'lucide-react'
 import { type Key, startTransition, useCallback, useMemo, useState } from 'react'
+import { UserCancelledError } from '../../lib/errors'
 import rclone from '../../lib/rclone/client'
-import { OVERRIDES } from '../../lib/rclone/overrides'
-import type { BackendOption } from '../../types/rclone'
+import { createRemoteInteractive } from '../../lib/rclone/interactive'
+import { INTERACTIVE_CONFIG_TYPES, OVERRIDES, OWN_OAUTH_TYPES } from '../../lib/rclone/overrides'
 import RemoteField from './RemoteField'
 
 export default function RemoteCreateDrawer({
@@ -51,7 +52,7 @@ export default function RemoteCreateDrawer({
     const currentBackendFields = useMemo(
         () =>
             currentBackend
-                ? (currentBackend.Options as BackendOption[]).filter((opt) => {
+                ? currentBackend.Options.filter((opt) => {
                       if (!opt.Provider) return true
                       if (opt.Provider.includes(config.provider) && !opt.Provider.startsWith('!'))
                           return true
@@ -67,6 +68,16 @@ export default function RemoteCreateDrawer({
         [currentBackend, config.provider, config.type]
     )
 
+    // Google Drive / Google Photos require the user's own OAuth credentials (rclone is retiring its
+    // shared client-id). Block creation until they're supplied.
+    const missingCredentials = useMemo(
+        () =>
+            OWN_OAUTH_TYPES.includes(config.type)
+                ? ['client_id', 'client_secret'].filter((f) => !(config[f] || '').trim())
+                : [],
+        [config]
+    )
+
     const createRemoteMutation = useMutation({
         mutationFn: async ({
             name,
@@ -75,12 +86,17 @@ export default function RemoteCreateDrawer({
         }: { name: string; type: string; parameters: Record<string, any> }) => {
             console.log('[RemoteCreateDrawer] newRemoteConfig', name, type, parameters)
 
+            if (INTERACTIVE_CONFIG_TYPES.includes(type)) {
+                return createRemoteInteractive({ name, type, parameters })
+            }
+
             await rclone('/config/create', {
                 params: {
                     query: {
                         name,
                         type,
                         parameters: JSON.stringify(parameters),
+                        opt: JSON.stringify({ obscure: true }),
                     },
                 },
             })
@@ -99,6 +115,10 @@ export default function RemoteCreateDrawer({
         onError: async (error) => {
             console.error('Failed to create remote:', error)
 
+            if (error instanceof UserCancelledError) {
+                return
+            }
+
             const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred'
 
             if (errorMessage.includes('address already in use')) {
@@ -109,6 +129,7 @@ export default function RemoteCreateDrawer({
                         kind: 'error',
                     }
                 )
+                return
             }
 
             await message(errorMessage, {
@@ -268,6 +289,7 @@ export default function RemoteCreateDrawer({
                             <Button
                                 color="primary"
                                 isLoading={createRemoteMutation.isPending}
+                                isDisabled={missingCredentials.length > 0}
                                 data-focus-visible="false"
                                 onPress={() => {
                                     setTimeout(() => {

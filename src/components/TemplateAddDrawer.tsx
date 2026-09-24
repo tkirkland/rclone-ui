@@ -31,8 +31,11 @@ import {
 } from 'lucide-react'
 import { startTransition, useEffect, useMemo, useState } from 'react'
 import { useDebounce } from 'use-debounce'
+import { formatErrorMessage } from '../../lib/errors'
+import type { AddTemplatePayload } from '../../lib/events'
 import {
     FLAG_CATEGORIES,
+    findFlagOption,
     getJsonKeyCount,
     getOptionsSubtitle,
     groupByCategory,
@@ -44,12 +47,31 @@ import type { BackendOption, FlagValue } from '../../types/rclone'
 import type { Template } from '../../types/template'
 import OptionsSection from './OptionsSection'
 
+// Strips one layer of matched surrounding quotes from an imported flag value: a pasted shell-style
+// `--filter "+ *.jpg"` reaches the parser as `"+ *.jpg"`, which would otherwise become an invalid
+// filter rule. Unmatched or absent quotes pass through unchanged.
+function stripQuotes(value: string): string {
+    const first = value[0]
+    if (
+        value.length >= 2 &&
+        (first === '"' || first === "'") &&
+        value[value.length - 1] === first
+    ) {
+        return value.slice(1, -1)
+    }
+    return value
+}
+
 export default function TemplateAddDrawer({
     isOpen,
     onClose,
+    initialValues,
 }: {
     isOpen: boolean
     onClose: () => void
+    // Deep-link prefill (rclone://add-template?cmd=…). A fresh object arrives per link, so a
+    // repeated identical link still re-applies.
+    initialValues?: AddTemplatePayload | null
 }) {
     const {
         globalFlags,
@@ -68,6 +90,12 @@ export default function TemplateAddDrawer({
 
     const [name, setName] = useState('')
     const [tags, setTags] = useState<string[]>([])
+
+    useEffect(() => {
+        if (!isOpen || !initialValues) return
+        setImportString(initialValues.cmd ?? '')
+        setName(initialValues.name ?? '')
+    }, [isOpen, initialValues])
 
     const [configOptionsJson, setConfigOptionsJson] = useState<string>('{}')
     const [copyOptionsJson, setCopyOptionsJson] = useState<string>('{}')
@@ -135,6 +163,11 @@ export default function TemplateAddDrawer({
         },
         onSuccess: () => {
             onClose()
+            // Clearing the command matters: re-importing the same command later hits the cached
+            // parseFlags query (same `data` reference), so the section-populate effect would not
+            // re-fire against the freshly reset sections.
+            setImportString('')
+            setImportedCount(null)
             setName('')
             setTags([])
             setMountOptionsJson('{}')
@@ -147,9 +180,7 @@ export default function TemplateAddDrawer({
         },
         onError: async (error) => {
             await message(
-                error instanceof Error
-                    ? error.message
-                    : 'Error saving template. Please check your options.',
+                formatErrorMessage(error, 'Error saving template. Please check your options.'),
                 {
                     title: 'Error',
                     kind: 'error',
@@ -176,19 +207,38 @@ export default function TemplateAddDrawer({
             const flagStrings = flagString.split('--').filter(Boolean)
 
             for (const flagString of flagStrings) {
-                const [flag, value] = flagString.split(' ')
+                const [flagToken, ...valueParts] = flagString.trim().split(/\s+/)
+                const equalsIndex = flagToken.indexOf('=')
+                const flag = equalsIndex === -1 ? flagToken : flagToken.slice(0, equalsIndex)
+                const normalizedFlag = flag.replace(/-/g, '_')
+                let value = equalsIndex === -1 ? undefined : flagToken.slice(equalsIndex + 1)
+                if (value === undefined && valueParts.length > 0) {
+                    value = valueParts.join(' ')
+                }
+                if (value !== undefined) {
+                    value = stripQuotes(value)
+                }
+                const flagInfo = findFlagOption(normalizedFlag, allFlags ?? {})
 
-                let v: FlagValue = value ? value.trim() : true
-                if (v === 'true') v = true
-                if (v === 'false') v = false
-                if (v === 'null') v = null
+                let parsedValue: FlagValue = value ?? true
+                if (flagInfo?.Type === 'bool') {
+                    parsedValue = value !== 'false'
+                } else if (flagInfo?.Type === 'Tristate') {
+                    parsedValue = value === 'null' ? null : value !== 'false'
+                } else if (flagInfo?.Type === 'stringArray') {
+                    parsedValue = value === undefined ? [] : [value]
+                } else if (flagInfo?.Type === 'SpaceSepList') {
+                    parsedValue = value?.split(/\s+/).filter(Boolean) ?? []
+                } else if (flagInfo?.Type && /^(u?int|float)/i.test(flagInfo.Type) && value) {
+                    const numberValue = Number(value)
+                    parsedValue = Number.isNaN(numberValue) ? value : numberValue
+                }
 
-                const parsedNumber = Number(v)
-                if (!isNaN(parsedNumber)) v = parsedNumber
-
-                if (value?.includes(',')) v = value.split(',')
-
-                flagGroups[flag.trim()] = v
+                const previousValue = flagGroups[normalizedFlag]
+                flagGroups[normalizedFlag] =
+                    Array.isArray(previousValue) && Array.isArray(parsedValue)
+                        ? [...previousValue, ...parsedValue]
+                        : parsedValue
             }
 
             console.log('flag groups', JSON.stringify(flagGroups, null, 2))
@@ -290,6 +340,7 @@ export default function TemplateAddDrawer({
                                             label="Import from command"
                                             labelPlacement="outside"
                                             placeholder="rclone copy --vfs-cache-mode writes ..."
+                                            value={importString}
                                             onValueChange={(value) => setImportString(value)}
                                             size="lg"
                                             data-focus-visible="false"
@@ -330,6 +381,7 @@ export default function TemplateAddDrawer({
                                             label="Name"
                                             labelPlacement="outside"
                                             placeholder="My Template"
+                                            value={name}
                                             onValueChange={(value) => setName(value)}
                                             size="lg"
                                             data-focus-visible="false"

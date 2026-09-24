@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "3.6.1"
+version = "3.7.5"
 description = "A Tauri App"
 authors = ["you"]
 license = ""
@@ -24,7 +24,6 @@ log = "0.4"
 tauri = { version = "2.11.1", features = [ "tray-icon",  "image-ico",
     "image-png", "config-json5" ] }
 tauri-plugin-log = "2.8.0"
-tauri-plugin-shell = "2.3.5"
 tauri-plugin-dialog = "2.7.1"
 tauri-plugin-fs = "2.5.1"
 tauri-plugin-opener = "2.5.4"
@@ -49,6 +48,19 @@ tinyfiledialogs = { package = "tinyfiledialogs-rs", version = "3.21.3", features
 tauri-plugin-deep-link = "2.4.9"
 flate2 = "1.1.9"
 tar = "0.4.45"
+sha2 = "0.10"
+dirs = "6"
+# The headless runner's OS toast (notifications/os.rs) — this is tauri-plugin-notification's own
+# desktop backend (same locked version), used directly because the plugin's API needs an
+# AppHandle and scheduled-run mode never builds a Tauri app.
+notify-rust = "4"
+uuid = { version = "1", features = ["v4"] }
+# Local wall-clock for the macOS launchd catch-up suppression (the runner skips a fire whose
+# local minute doesn't match the cron — a wake-catch-up rather than an on-time fire).
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 cocoa = "0.26"
@@ -58,6 +70,16 @@ objc = "0.2"
 zbus = { version = "5" }
 x11rb = "0.13"
 gtk = "0.18"
+gdkx11 = "0.18"
 
-[patch.crates-io]
-tao = { git = "https://github.com/tauri-apps/tao", branch = "fix-windows-white-flash" }
+[target.'cfg(target_os = "windows")'.dependencies]
+winreg = "0.52"
+# Job-object features: the scheduler runner ties the transient rclone daemon's lifetime to a
+# KILL_ON_JOB_CLOSE job (scheduler/winjob.rs) so a hard-killed runner can't orphan it.
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }

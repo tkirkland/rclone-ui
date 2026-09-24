@@ -1,42 +1,60 @@
 import * as Sentry from '@sentry/browser'
-import { invoke } from '@tauri-apps/api/core'
+import { Channel, invoke } from '@tauri-apps/api/core'
 import { getCurrentWindow } from '@tauri-apps/api/window'
+import { writeText } from '@tauri-apps/plugin-clipboard-manager'
 import { getCurrent, onOpenUrl } from '@tauri-apps/plugin-deep-link'
 import { ask, message } from '@tauri-apps/plugin-dialog'
 import { debug, error, info, trace, warn } from '@tauri-apps/plugin-log'
 import { platform } from '@tauri-apps/plugin-os'
-import { writeText } from '@tauri-apps/plugin-clipboard-manager'
 import { exit, relaunch } from '@tauri-apps/plugin-process'
-import type { Child } from '@tauri-apps/plugin-shell'
-
-import { CronExpressionParser } from 'cron-parser'
+import pRetry from 'p-retry'
 import { defaultOptions } from 'tauri-plugin-sentry-api'
 import { getDeepLinkUrl, handleDeepLinkUrl } from './lib/deep'
-import { LOCAL_HOST_ID, getHostInfo } from './lib/hosts'
-import { validateLicense } from './lib/license'
-import notify from './lib/notify'
-import queryClient from './lib/query'
+import { CLOSE_APP, RELAUNCH_APP, RESTART_RCLONE, type RestartRclonePayload } from './lib/events'
+import { LOCAL_HOST_ID, RC_PORT, getHostInfo, makeLocalHost } from './lib/hosts'
 import {
-    listTransfers,
-    startBisync,
-    startCopy,
-    startDelete,
-    startMount,
-    startMove,
-    startPurge,
-    startSync,
-} from './lib/rclone/api'
+    clearWatchedJobs,
+    dispatchNotification,
+    initJobWatcher,
+    notify,
+} from './lib/notifications'
+import queryClient from './lib/query'
+import { listTransfers, startMount } from './lib/rclone/api'
 import rcloneClient from './lib/rclone/client'
 import { initRclone } from './lib/rclone/init'
+import { AutomountSourceError, listMountSource, probeMountSource } from './lib/rclone/mount'
+import { reconcileConfigSync } from './lib/rclone/versions'
+import { initScheduler } from './lib/scheduler'
 import { initTray } from './lib/tray'
 import { openSmallWindow } from './lib/window'
-import { initHostStore, useHostStore } from './store/host'
+import { type RemoteConfig, initHostStore, useHostStore } from './store/host'
+import { waitForStoreHydration } from './store/lib'
 import { useStore } from './store/memory'
-import { usePersistedStore } from './store/persisted'
-import type { ScheduledTask } from './types/schedules'
+import { selectCurrentHost, usePersistedStore } from './store/persisted'
 
-let currentRcloneChild: Child | null = null
 let rcloneListenersRegistered = false
+
+// Mirrors zookeeper.rs RcloneEvent — only 'close' is emitted.
+type RcloneDaemonEvent = {
+    kind: 'close'
+    code: number | null
+    intentional: boolean
+}
+
+async function killRcloneDaemon() {
+    // Rust daemon state is authoritative: the command no-ops (returns false) when nothing is
+    // tracked, so we must not gate on a local mirror that could defeat its reload-orphan guard.
+    let killed = false
+    try {
+        killed = await invoke<boolean>('kill_rclone_daemon', {})
+    } catch (error) {
+        console.error('[killRcloneDaemon] failed to kill rclone daemon', error)
+        Sentry.captureException(error)
+    }
+    if (killed) {
+        await new Promise((resolve) => setTimeout(resolve, 1000))
+    }
+}
 
 try {
     Sentry.init({
@@ -77,8 +95,11 @@ async function checkFlatpakPermissions() {
     const hasPermissions = await invoke<boolean>('has_flatpak_permissions')
     if (hasPermissions) return
 
+    const overrideCommand =
+        'flatpak override --user --filesystem=host --talk-name=org.freedesktop.Flatpak com.rcloneui.RcloneUI'
+
     const copyCommand = await ask(
-        'You are running the flatpak version of Rclone UI, which is sandboxed.\n\nrclone is a file management utility that needs disk access in order to run. Please allow it using the following command (copy paste in your terminal):\n\nflatpak override --user --filesystem=host com.rcloneui.RcloneUI\n\nRestart Rclone UI afterwards.',
+        `You are running the flatpak version of Rclone UI, which is sandboxed.\n\nRclone UI needs disk access to manage your files, and host access to schedule tasks. Please grant both using the following command (copy paste in your terminal):\n\n${overrideCommand}\n\nRestart Rclone UI afterwards.`,
         {
             title: 'Flatpak Permissions Required',
             kind: 'warning',
@@ -88,7 +109,7 @@ async function checkFlatpakPermissions() {
     )
 
     if (copyCommand) {
-        await writeText('flatpak override --user --filesystem=host com.rcloneui.RcloneUI')
+        await writeText(overrideCommand)
     }
 
     await exit()
@@ -96,19 +117,14 @@ async function checkFlatpakPermissions() {
 
 async function waitForHydration() {
     console.log('[waitForHydration] waiting for store hydration')
-
-    await new Promise((resolve) => setTimeout(resolve, 50))
-    if (!usePersistedStore.persist.hasHydrated()) {
-        await waitForHydration()
-    }
+    await waitForStoreHydration(() => usePersistedStore.persist.hasHydrated())
     console.log('[waitForHydration] store hydrated')
 }
 
 async function initializeHostStore() {
     console.log('[initializeHostStore] initializing')
-    const currentHost = usePersistedStore.getState().currentHost
     // Default to 'local' if fresh install/no host selected
-    const hostId = currentHost?.id || 'local'
+    const hostId = usePersistedStore.getState().currentHostId || LOCAL_HOST_ID
 
     await initHostStore(hostId)
 
@@ -118,7 +134,7 @@ async function initializeHostStore() {
 async function checkHostReachability(): Promise<void> {
     console.log('[checkHostReachability] checking host reachability')
 
-    const currentHost = usePersistedStore.getState().currentHost
+    const currentHost = selectCurrentHost(usePersistedStore.getState())
 
     // If no host selected or local host, skip check (local rclone hasn't started yet)
     if (!currentHost || currentHost.id === LOCAL_HOST_ID) {
@@ -162,13 +178,15 @@ async function checkHostReachability(): Promise<void> {
             console.log('[checkHostReachability] retrying connection')
             isReachable = await checkReachability()
         } else {
-            // User chose to use local host
+            // User chose to use local host. Upsert the local host and point at it in one write so
+            // currentHostId never dangles.
             console.log('[checkHostReachability] switching to local host')
-            const hosts = usePersistedStore.getState().hosts
-            const localHost = hosts.find((h) => h.id === LOCAL_HOST_ID)
-            if (localHost) {
-                usePersistedStore.setState({ currentHost: localHost })
-            }
+            usePersistedStore.setState((prev) => ({
+                hosts: prev.hosts.some((h) => h.id === LOCAL_HOST_ID)
+                    ? prev.hosts
+                    : [...prev.hosts, makeLocalHost()],
+                currentHostId: LOCAL_HOST_ID,
+            }))
             // Re-initialize host store for local
             await initHostStore(LOCAL_HOST_ID)
             return
@@ -178,54 +196,11 @@ async function checkHostReachability(): Promise<void> {
     console.log('[checkHostReachability] host is reachable')
 }
 
-async function validateInstance() {
-    console.log('[validateInstance] validating license')
-
-    const licenseKey = usePersistedStore.getState().licenseKey
-    if (!licenseKey) {
-        console.log('[validateInstance] no license key, skipping license validation')
-        usePersistedStore.setState({ licenseValid: false })
-        return
-    }
-
-    if (!navigator.onLine) {
-        console.log('[validateInstance] not online, skipping license validation')
-        return
-    }
-
-    try {
-        await validateLicense(licenseKey)
-    } catch (e) {
-        console.log('[validateInstance] error validating license, marking as invalid')
-        usePersistedStore.setState({ licenseValid: false })
-
-        if (e instanceof Error) {
-            await message(e.message, {
-                title: 'Error Validating License',
-                kind: 'error',
-                okLabel: 'OK',
-            })
-            console.log('[validateInstance] error message displayed, returning')
-            return
-        }
-
-        await message('An error occurred while validating your license. Please try again.', {
-            title: 'Error',
-            kind: 'error',
-            okLabel: 'OK',
-        })
-        console.log('[validateInstance] default error message displayed, returning')
-    } finally {
-        console.log('[validateInstance] license validation complete')
-    }
-}
-
 async function checkAlreadyRunning() {
     console.log('[checkAlreadyRunning]')
 
     try {
-        const rcPort = 5572
-        const running = await invoke<boolean>('is_rclone_running', { port: rcPort })
+        const running = await invoke<boolean>('is_rclone_running', { port: RC_PORT })
         console.log('[checkAlreadyRunning] running', running)
 
         if (running) {
@@ -276,24 +251,26 @@ async function registerRcloneWindowListeners() {
 
     const window = getCurrentWindow()
 
-    await window.listen('close-app', async () => {
-        console.log('[registerRcloneWindowListeners] close-app requested')
-
-        const transfers = await queryClient.ensureQueryData({
-            queryKey: ['transfers', 'list', 'all'],
-            queryFn: async () => await listTransfers(),
-            staleTime: 10_000, // 10 seconds
-            gcTime: 60_000, // 1 minute
-        })
+    // Kill the daemon BEFORE exit/relaunch — this ordering is the entire point of these listeners.
+    const shutdown = async (mode: 'quit' | 'relaunch') => {
+        // A dead daemon means "no active transfers": don't let a listTransfers throw make quit a
+        // silent no-op.
+        const transfers = await queryClient
+            .ensureQueryData({
+                queryKey: ['transfers', 'list', 'all'],
+                queryFn: async () => await listTransfers(),
+                staleTime: 10_000, // 10 seconds
+                gcTime: 60_000, // 1 minute
+            })
+            .catch(() => null)
 
         if (transfers?.active && transfers.active.length > 0) {
             const answer = await ask('All active transfers will be stopped.', {
                 title: 'Exit',
                 kind: 'info',
-                okLabel: 'Quit',
+                okLabel: mode === 'relaunch' ? 'Relaunch' : 'Quit',
                 cancelLabel: 'Cancel',
             })
-
             if (!answer) {
                 return
             }
@@ -302,106 +279,91 @@ async function registerRcloneWindowListeners() {
         const cloudflaredTunnel = useStore.getState().cloudflaredTunnel
         if (cloudflaredTunnel) {
             try {
-                console.log('[close-app] stopping cloudflared tunnel')
+                console.log('[shutdown] stopping cloudflared tunnel')
                 await invoke('stop_cloudflared_tunnel', { pid: cloudflaredTunnel.pid })
                 useStore.setState({ cloudflaredTunnel: null })
             } catch (error) {
-                console.error('[close-app] failed to stop cloudflared tunnel', error)
+                console.error('[shutdown] failed to stop cloudflared tunnel', error)
             }
         }
 
-        const child = currentRcloneChild
+        await killRcloneDaemon()
 
-        if (child) {
-            try {
-                await child.kill()
-            } catch (error) {
-                console.error('[close-app] failed to kill rclone child', error)
-                Sentry.captureException(error)
-            }
-            currentRcloneChild = null
-            await new Promise((resolve) => setTimeout(resolve, 1000))
+        if (mode === 'relaunch') {
+            await relaunch()
+        } else {
+            await exit(0)
         }
+    }
 
-        await exit(0)
+    await window.listen(CLOSE_APP, async () => {
+        console.log('[registerRcloneWindowListeners] close-app requested')
+        await shutdown('quit')
     })
     console.log('[registerRcloneWindowListeners] close-app listener registered')
 
-    await window.listen('relaunch-app', async () => {
+    await window.listen(RELAUNCH_APP, async () => {
         console.log('[registerRcloneWindowListeners] relaunch-app requested')
-
-        const transfers = await queryClient.ensureQueryData({
-            queryKey: ['transfers', 'list', 'all'],
-            queryFn: async () => await listTransfers(),
-            staleTime: 10_000, // 10 seconds
-            gcTime: 60_000, // 1 minute
-        })
-
-        if (transfers?.active && transfers.active.length > 0) {
-            const answer = await ask('All active transfers will be stopped.', {
-                title: 'Exit',
-                kind: 'info',
-                okLabel: 'Relaunch',
-                cancelLabel: 'Cancel',
-            })
-            if (!answer) {
-                return
-            }
-        }
-
-        const cloudflaredTunnel = useStore.getState().cloudflaredTunnel
-        if (cloudflaredTunnel) {
-            try {
-                console.log('[close-app] stopping cloudflared tunnel')
-                await invoke('stop_cloudflared_tunnel', { pid: cloudflaredTunnel.pid })
-                useStore.setState({ cloudflaredTunnel: null })
-            } catch (error) {
-                console.error('[close-app] failed to stop cloudflared tunnel', error)
-            }
-        }
-
-        const child = currentRcloneChild
-
-        if (child) {
-            try {
-                await child.kill()
-            } catch (error) {
-                console.error('[relaunch-app] failed to kill rclone child', error)
-                Sentry.captureException(error)
-            }
-            currentRcloneChild = null
-            await new Promise((resolve) => setTimeout(resolve, 1000))
-        }
-
-        await relaunch()
+        await shutdown('relaunch')
     })
     console.log('[registerRcloneWindowListeners] relaunch-app listener registered')
 
-    await window.listen('restart-rclone', async () => {
+    await window.listen<RestartRclonePayload>(RESTART_RCLONE, async (event) => {
         console.log('[registerRcloneWindowListeners] restart-rclone requested')
 
+        // Trust the payload: the initiating webview's store writes may not have reached the main
+        // window yet. Apply BEFORE the in-flight guard so state isn't lost on a skipped restart.
+        // configFiles BEFORE activeConfigId (setActiveConfigFile resolves against state.configFiles
+        // and nulls on a miss). NEVER log the raw payload — it carries config `pass`.
+        const payload = event.payload
+        if (payload) {
+            if (payload.rclonePath) {
+                usePersistedStore.getState().setRclonePath(payload.rclonePath)
+            }
+            if (payload.defaultConfigPath) {
+                useHostStore.getState().setDefaultConfigPath(payload.defaultConfigPath)
+            }
+            if (payload.configFiles) {
+                useHostStore.setState({ configFiles: payload.configFiles })
+            }
+            if (payload.activeConfigId) {
+                useHostStore.getState().setActiveConfigFile(payload.activeConfigId)
+            }
+            if (payload.proxy !== undefined) {
+                useHostStore.setState({ proxy: payload.proxy })
+            }
+            // Apply BEFORE startRclone so the post-spawn reconcileConfigSync reads fresh intent +
+            // ownership marker (a stale marker would let it miss or misattribute the link).
+            if (payload.syncConfigToSystem !== undefined) {
+                useHostStore.setState({ syncConfigToSystem: payload.syncConfigToSystem })
+            }
+            if (payload.syncConfigLinkTarget !== undefined) {
+                useHostStore.setState({ syncConfigLinkTarget: payload.syncConfigLinkTarget })
+            }
+        }
+
         if (useStore.getState().isRestartingRclone) {
-            console.log('[restart-rclone] restart already in progress, ignoring request')
+            // Don't DROP an overlapping request — that would leave the daemon on the old config while
+            // the store/symlink already point at the new one. The payload's state was applied above,
+            // so flag a re-run and let the in-flight restart pick it up when it finishes.
+            console.log('[restart-rclone] restart in progress, coalescing into a pending re-run')
+            useStore.setState({ rcloneRestartPending: true })
             return
         }
 
-        useStore.setState({ isRestartingRclone: true })
+        useStore.setState({ isRestartingRclone: true, rcloneRestartPending: false })
 
         try {
-            const child = currentRcloneChild
+            // Loop so a request that arrived (and applied its state) mid-restart still takes effect.
+            do {
+                useStore.setState({ rcloneRestartPending: false })
+                await killRcloneDaemon()
 
-            if (child) {
-                try {
-                    await child.kill()
-                } catch (error) {
-                    console.error('[restart-rclone] failed to exit rclone process', error)
-                    Sentry.captureException(error)
-                }
-                currentRcloneChild = null
-                await new Promise((resolve) => setTimeout(resolve, 1000))
-            }
+                // Jobids do not survive a daemon restart — polling them would only 404.
+                clearWatchedJobs()
 
-            await startRclone()
+                await startRclone()
+            } while (useStore.getState().rcloneRestartPending)
         } catch (error) {
             console.error('[restart-rclone] failed to restart rclone', error)
             Sentry.captureException(error)
@@ -452,25 +414,41 @@ async function startRclone() {
         return await exit(0)
     }
 
-    const command = rclone?.system || rclone?.internal
-
-    if (!command) {
+    if (!rclone) {
         console.error('[startRclone] initRclone returned without a runnable command')
         Sentry.captureException(new Error('initRclone returned without a runnable command.'))
         return
     }
 
-    command.addListener('close', async (event) => {
-        console.log('close', event)
-        currentRcloneChild = null
+    const { path, args: rcloneArgs, env } = rclone
+
+    const channel = new Channel<RcloneDaemonEvent>()
+    channel.onmessage = async (payload) => {
+        console.log('[startRclone] daemon close', payload)
+
+        // Killed intentionally (restart / quit) — the initiator handles what happens next.
+        if (payload.intentional) {
+            return
+        }
+
+        // Awaited: the Windows branch below exits the app, so webhook delivery must finish
+        // first — but capped so an unreachable endpoint can't stall crash recovery.
+        // dispatchNotification never throws. Watched jobids died with the daemon.
+        await Promise.race([
+            dispatchNotification('rclone.crashed', {
+                title: 'Rclone daemon crashed',
+                body: `rclone exited unexpectedly${payload.code !== null ? ` (code ${payload.code})` : ''}`,
+                data: { exitCode: payload.code },
+            }),
+            new Promise((resolve) => setTimeout(resolve, 20_000)),
+        ])
+        clearWatchedJobs()
 
         if (platform() === 'windows') {
             return await exit(0)
         }
 
-        console.log('event.code', event.code)
-
-        if (event.code === 143 || event.code === 1) {
+        if (payload.code === 143 || payload.code === 1) {
             Sentry.captureException(new Error('Rclone has crashed'))
             const confirmed = await ask('Rclone has crashed', {
                 title: 'Error',
@@ -483,16 +461,43 @@ async function startRclone() {
             }
             await relaunch()
         }
-    })
+    }
 
-    command.addListener('error', (event) => {
-        console.log('error', event)
-    })
+    console.log('[startRclone] spawning rclone daemon')
+    let pid: number
+    try {
+        pid = await invoke<number>('spawn_rclone', {
+            path,
+            args: rcloneArgs,
+            env,
+            onEvent: channel,
+        })
+    } catch (error) {
+        console.error('[startRclone] failed to spawn rclone daemon', error)
+        Sentry.captureException(error)
+        // A relaunch re-runs the resolution ladder, which can heal a broken binary.
+        const confirmed = await ask(
+            `Rclone failed to start: ${error instanceof Error ? error.message : String(error)}`,
+            {
+                title: 'Error',
+                kind: 'error',
+                okLabel: 'Relaunch',
+                cancelLabel: 'Exit',
+            }
+        )
+        if (confirmed) {
+            await relaunch()
+            return
+        }
+        return await exit(0)
+    }
+    console.log('[startRclone] running rclone, pid', pid)
 
-    console.log('[startRclone] starting rclone')
-    const childProcess = await command.spawn()
-    currentRcloneChild = childProcess
-    console.log('[startRclone] running rclone')
+    // Heal the config-sync symlink against the now-settled active config: with intent on, re-point a
+    // stale link or recreate one deleted out-of-band; with intent off but a marker still recorded
+    // (a disable that crashed before persisting), remove the link we own. A true no-op only when
+    // both intent and marker are clear. Marker-proven, so a user's own symlink is never touched.
+    await reconcileConfigSync()
 
     await new Promise((resolve) => setTimeout(resolve, 500))
 }
@@ -509,45 +514,69 @@ async function startupMounts() {
     })
     console.log('[startupMounts] remotes', remotes)
 
+    const jobs: { remote: string; mountOnStart: NonNullable<RemoteConfig['mountOnStart']> }[] = []
     for (const remote of remotes) {
-        console.log('[startupMounts] remote', remote)
-
         const remoteConfig = remoteConfigList[remote]
         if (!remoteConfig) {
             console.log('[startupMounts] remote config not found', remote)
             continue
         }
-        console.log('[startupMounts] remote config found', remoteConfig)
         if (remoteConfig.mountOnStart?.enabled && remoteConfig.mountOnStart?.mountPoint) {
-            console.log(
-                '[startupMounts] remote config mount on start enabled',
-                remoteConfig.mountOnStart
-            )
+            console.log('[startupMounts] automount enabled', remote, remoteConfig.mountOnStart)
+            jobs.push({ remote, mountOnStart: remoteConfig.mountOnStart })
+        }
+    }
+    if (jobs.length === 0) {
+        return
+    }
+
+    const runJobs = async () => {
+        for (const { remote, mountOnStart } of jobs) {
+            const {
+                mountPoint,
+                remotePath,
+                mountOptions,
+                vfsOptions,
+                filterOptions,
+                configOptions,
+            } = mountOnStart
+            const source = `${remote}:${remotePath}`
+
             try {
-                const {
-                    mountPoint,
-                    remotePath,
-                    mountOptions,
-                    vfsOptions,
-                    filterOptions,
-                    configOptions,
-                } = remoteConfig.mountOnStart
+                await pRetry(() => probeMountSource(source), {
+                    retries: 7,
+                    factor: 2,
+                    minTimeout: 1_000,
+                    maxTimeout: 15_000,
+                    shouldRetry: ({ error }: { error: unknown }) =>
+                        !(error instanceof AutomountSourceError),
+                })
+            } catch (error) {
+                console.error('[startupMounts] source probe failed, not mounting', source, error)
+                const body =
+                    error instanceof AutomountSourceError
+                        ? error.message
+                        : `${source} is not reachable (network or sign-in problem) — not mounting to avoid an empty folder at ${mountPoint}`
+                dispatchNotification('mount.failed', {
+                    title: 'Automount skipped',
+                    body,
+                    data: {
+                        source,
+                        destination: mountPoint,
+                        error: error instanceof Error ? error.message : String(error),
+                    },
+                })
+                await notify({ title: 'Automount skipped', body })
+                continue
+            }
 
+            try {
                 console.log('[startupMounts] starting mount', {
-                    source: `${remote}:${remotePath}`,
+                    source,
                     destination: mountPoint,
-                    options: {
-                        mount: mountOptions,
-                        vfs: vfsOptions,
-                        filter: filterOptions,
-                        config: configOptions,
-                    },
                 })
-
-                console.log('[startupMounts] starting mount')
-
                 await startMount({
-                    source: `${remote}:${remotePath}`,
+                    source,
                     destination: mountPoint,
                     options: {
                         mount: mountOptions,
@@ -556,24 +585,30 @@ async function startupMounts() {
                         config: configOptions,
                     },
                 })
-
                 console.log('[startupMounts] mount started')
+                try {
+                    await listMountSource(source)
+                } catch (error) {
+                    console.warn('[startupMounts] mounted but listing failed', source, error)
+                    await notify({
+                        title: 'Automount warning',
+                        body: `${source} mounted at ${mountPoint}, but listing it failed — the folder may appear empty until the connection recovers`,
+                    })
+                }
             } catch (error) {
                 console.error('Error mounting remote:', error)
                 Sentry.captureException(error)
-                await message(
-                    error instanceof Error
-                        ? error.message
-                        : `Failed to mount ${remote} on startup.`,
-                    {
-                        title: 'Automount Error',
-                        kind: 'error',
-                        okLabel: 'Got it',
-                    }
-                )
+                await notify({
+                    title: 'Automount Error',
+                    body:
+                        error instanceof Error
+                            ? error.message
+                            : `Failed to mount ${remote} on startup.`,
+                })
             }
         }
     }
+    runJobs().catch((error) => console.error('[startupMounts] unexpected failure', error))
 }
 
 async function showStartup() {
@@ -591,7 +626,14 @@ async function showStartup() {
     }
 
     console.log('[showStartup] startup not displayed, setting displayed and status')
-    useStore.setState({ startupDisplayed: true, startupStatus: 'initialized' })
+    // Upgrade-only: a successful auto-update's 'updated' status must survive so its message shows;
+    // everything else (normal launch with null status, or a failed update restored to
+    // 'initializing') becomes 'initialized'. Never unconditionally clobber, or 'updated' is lost.
+    const currentStartupStatus = useStore.getState().startupStatus
+    useStore.setState({
+        startupDisplayed: true,
+        startupStatus: currentStartupStatus === 'updated' ? 'updated' : 'initialized',
+    })
     console.log('[showStartup] store updated with startup displayed and status set')
     await openSmallWindow({
         name: 'Startup',
@@ -604,305 +646,8 @@ async function showStartup() {
     console.log('[showStartup] startup hidden')
 }
 
-const MAX_INT_MS = 2_147_483_647
-let hasScheduledTasks = false
-async function resumeTasks() {
-    console.log('[resumeTasks] resuming tasks')
-
-    if (hasScheduledTasks) {
-        console.log('[resumeTasks] already called, skipping (hasScheduledTasks=true)')
-        return
-    }
-
-    const scheduledTasks = useHostStore.getState().scheduledTasks
-    const activeConfigId = useHostStore.getState().activeConfigFile?.id
-
-    console.log('[resumeTasks] found', scheduledTasks.length, 'scheduled tasks')
-    console.log('[resumeTasks] activeConfigId:', activeConfigId)
-
-    if (!activeConfigId) {
-        console.log('[resumeTasks] no active config id, cannot schedule tasks')
-        return
-    }
-
-    hasScheduledTasks = true
-
-    console.log('[resumeTasks] processing tasks for config:', activeConfigId)
-
-    let scheduledCount = 0
-    let skippedRunning = 0
-    let skippedConfigMismatch = 0
-    let skippedTimingIssue = 0
-
-    for (const task of scheduledTasks) {
-        console.log('[resumeTasks] processing task:', {
-            id: task.id,
-            operation: task.operation,
-            cron: task.cron,
-            configId: task.configId,
-            isRunning: task.isRunning,
-            isEnabled: task.isEnabled,
-        })
-
-        if (!task.isEnabled) {
-            console.log('[resumeTasks] task', task.id, 'is disabled, skipping')
-            continue
-        }
-
-        if (task.isRunning) {
-            console.log('[resumeTasks] task', task.id, 'was marked as running, resetting state')
-            useHostStore.getState().updateScheduledTask(task.id, {
-                isRunning: false,
-                currentRunId: undefined,
-                lastRunError: 'Task closed prematurely',
-            })
-            skippedRunning++
-            continue
-        }
-
-        if (task.configId !== activeConfigId) {
-            console.log(
-                '[resumeTasks] task',
-                task.id,
-                'belongs to different config:',
-                task.configId,
-                '!==',
-                activeConfigId
-            )
-            skippedConfigMismatch++
-            continue
-        }
-
-        try {
-            console.log('[resumeTasks] parsing cron expression:', task.cron)
-            const cronInterval = CronExpressionParser.parse(task.cron)
-            const nextRun = cronInterval.next().toDate()
-            const now = Date.now()
-            const difference = nextRun.getTime() - now
-
-            console.log('[resumeTasks] task', task.id, 'timing:', {
-                nextRun: nextRun.toISOString(),
-                now: new Date(now).toISOString(),
-                differenceMs: difference,
-                differenceMinutes: Math.round(difference / 60000),
-                maxAllowedMs: MAX_INT_MS,
-                withinLimit: difference <= MAX_INT_MS,
-                isPositive: difference > 0,
-            })
-
-            if (difference <= MAX_INT_MS && difference > 0) {
-                console.log(
-                    '[resumeTasks] scheduling task',
-                    task.id,
-                    'to run in',
-                    Math.round(difference / 60000),
-                    'minutes'
-                )
-                setTimeout(async () => {
-                    console.log(
-                        '[resumeTasks] timer fired for task',
-                        task.id,
-                        'at',
-                        new Date().toISOString()
-                    )
-                    notify({
-                        title: 'Task Started',
-                        body: `Task ${task.operation} (${task.id}) started`,
-                    })
-                    await handleTask(task)
-                }, difference)
-                scheduledCount++
-                console.log(
-                    '[resumeTasks] task',
-                    task.id,
-                    'scheduled successfully for',
-                    nextRun.toISOString()
-                )
-            } else {
-                console.log(
-                    '[resumeTasks] task',
-                    task.id,
-                    'NOT scheduled:',
-                    difference > MAX_INT_MS
-                        ? 'next run too far in future'
-                        : 'next run is in the past or now'
-                )
-                skippedTimingIssue++
-            }
-        } catch (error) {
-            console.error('[resumeTasks] error scheduling task', task.id, ':', error)
-            console.error('[resumeTasks] task details:', JSON.stringify(task, null, 2))
-            Sentry.captureException(error)
-        }
-    }
-
-    console.log('[resumeTasks] summary:', {
-        totalTasks: scheduledTasks.length,
-        scheduledCount,
-        skippedRunning,
-        skippedConfigMismatch,
-        skippedTimingIssue,
-    })
-}
-
-async function handleTask(task: ScheduledTask) {
-    console.log('[handleTask] starting execution for task:', task.id, task.operation)
-
-    const currentTask = useHostStore.getState().scheduledTasks.find((t) => t.id === task.id)
-
-    if (!currentTask) {
-        console.log('[handleTask] task', task.id, 'not found in store, aborting')
-        return
-    }
-
-    console.log('[handleTask] found task in store:', {
-        id: currentTask.id,
-        isRunning: currentTask.isRunning,
-        currentRunId: currentTask.currentRunId,
-        isEnabled: currentTask.isEnabled,
-    })
-
-    if (currentTask.isRunning) {
-        console.log(
-            '[handleTask] task',
-            task.id,
-            'already running (runId:',
-            currentTask.currentRunId,
-            '), aborting'
-        )
-        return
-    }
-
-    const freshRunId = crypto.randomUUID()
-    console.log('[handleTask] generated freshRunId:', freshRunId)
-
-    useHostStore.getState().updateScheduledTask(task.id, {
-        isRunning: true,
-        currentRunId: freshRunId,
-        lastRun: new Date().toISOString(),
-    })
-
-    console.log('[handleTask] running task', task.operation, task.id)
-    console.log('[handleTask] updated task state, isRunning=true, runId:', freshRunId)
-
-    const currentRunId = useHostStore
-        .getState()
-        .scheduledTasks.find((t) => t.id === task.id)?.currentRunId
-
-    console.log('[handleTask] verifying runId - expected:', freshRunId, 'actual:', currentRunId)
-
-    if (currentRunId !== freshRunId) {
-        console.log('[handleTask] runId mismatch, another execution may have started, aborting')
-        return
-    }
-
-    console.log(
-        '[handleTask] executing operation:',
-        task.operation,
-        'with args:',
-        JSON.stringify(task.args, null, 2)
-    )
-
-    try {
-        switch (task.operation) {
-            case 'copy': {
-                console.log('[handleTask] starting copy operation')
-                const { sources, options, destination } = task.args
-                await startCopy({
-                    sources,
-                    destination,
-                    options,
-                })
-                console.log('[handleTask] copy operation completed')
-                break
-            }
-            case 'move': {
-                console.log('[handleTask] starting move operation')
-                const { sources, options, destination } = task.args
-                await startMove({
-                    sources,
-                    destination,
-                    options,
-                })
-                console.log('[handleTask] move operation completed')
-                break
-            }
-            case 'sync': {
-                console.log('[handleTask] starting sync operation')
-                const { source, destination, options } = task.args
-                await startSync({
-                    source,
-                    destination,
-                    options,
-                })
-                console.log('[handleTask] sync operation completed')
-                break
-            }
-            case 'bisync': {
-                console.log('[handleTask] starting bisync operation')
-                const { source, destination, options } = task.args
-                await startBisync({
-                    source,
-                    destination,
-                    options,
-                })
-                console.log('[handleTask] bisync operation completed')
-                break
-            }
-            case 'delete': {
-                console.log('[handleTask] starting delete operation')
-                const { sources, options } = task.args
-                await startDelete({
-                    sources,
-                    options,
-                })
-                console.log('[handleTask] delete operation completed')
-                break
-            }
-            case 'purge': {
-                console.log('[handleTask] starting purge operation')
-                const { sources, options } = task.args
-                await startPurge({
-                    sources,
-                    options,
-                })
-                console.log('[handleTask] purge operation completed')
-                break
-            }
-            default:
-                console.log('[handleTask] unknown operation encountered')
-                break
-        }
-        console.log('[handleTask] task', task.id, 'completed successfully')
-    } catch (err) {
-        Sentry.captureException(err)
-        console.error('[handleTask] task', task.id, 'failed with error:', err)
-        console.error('[handleTask] task args were:', JSON.stringify(task.args, null, 2))
-        useHostStore.getState().updateScheduledTask(task.id, {
-            lastRunError: err instanceof Error ? err.message : 'Unknown error',
-        })
-    } finally {
-        console.log('[handleTask] cleaning up task', task.id, 'state')
-        useHostStore.getState().updateScheduledTask(task.id, {
-            isRunning: false,
-            currentRunId: undefined,
-        })
-    }
-}
-
-
 async function checkRclone() {
-    let currentHost = usePersistedStore.getState().currentHost
-
-    if (!currentHost) {
-        currentHost = {
-            id: 'local',
-            name: 'Local Machine',
-            url: 'http://localhost:5572',
-            os: 'linux',
-            cliVersion: 'unknown',
-        }
-    }
+    let currentHost = selectCurrentHost(usePersistedStore.getState()) ?? makeLocalHost()
 
     let hostInfo = await getHostInfo({
         url: currentHost.url,
@@ -918,13 +663,7 @@ async function checkRclone() {
                 kind: 'error',
             }
         )
-        currentHost = {
-            id: 'local',
-            name: 'Local Machine',
-            url: 'http://localhost:5572',
-            os: 'linux',
-            cliVersion: 'unknown',
-        }
+        currentHost = makeLocalHost()
 
         hostInfo = await getHostInfo({
             url: currentHost.url,
@@ -959,9 +698,9 @@ async function checkRclone() {
 
     console.log('[checkRclone] setting currentHost', currentHost)
 
-    usePersistedStore.setState({ currentHost })
     usePersistedStore.setState((prev) => ({
-        hosts: [...prev.hosts.filter((h) => h.id !== currentHost!.id), currentHost],
+        hosts: [...prev.hosts.filter((h) => h.id !== currentHost.id), currentHost],
+        currentHostId: currentHost.id,
     }))
 }
 
@@ -970,18 +709,16 @@ getCurrentWindow().listen('tauri://close-requested', async () => {
     await getCurrentWindow().destroy()
 })
 
-// maybe place this inside handleDeepLink?
+function processDeepLink(url: string) {
+    const deepLinkUrl = getDeepLinkUrl(url)
+    console.log('deep link url', deepLinkUrl)
+    handleDeepLinkUrl(deepLinkUrl)
+    useStore.setState({ startupDisplayed: true, startupStatus: 'initializing' })
+}
+
 onOpenUrl((urls) => {
     console.log('deep links while running', urls)
-    const receivedUrl = urls[0]
-
-    const deepLinkUrl = getDeepLinkUrl(receivedUrl)
-
-    console.log('deep link url', deepLinkUrl)
-
-    handleDeepLinkUrl(deepLinkUrl)
-
-    useStore.setState({ startupDisplayed: true, startupStatus: 'initializing' })
+    processDeepLink(urls[0])
 })
 
 async function handleDeepLink() {
@@ -991,32 +728,21 @@ async function handleDeepLink() {
         console.log('[handleDeepLink] no deep links found')
         return
     }
-
-    console.log('[handleDeepLink] getting deep link url')
-    const deepLinkUrl = getDeepLinkUrl(urls[0])
-    console.log('[handleDeepLink] deep link url', deepLinkUrl)
-
-    console.log('[handleDeepLink] handling deep link url')
-    handleDeepLinkUrl(deepLinkUrl)
-    console.log('[handleDeepLink] deep link url handled')
-
-    console.log('[handleDeepLink] setting startup displayed and status')
-    useStore.setState({ startupDisplayed: true, startupStatus: 'initializing' })
-    console.log('[handleDeepLink] startup displayed and status set')
+    processDeepLink(urls[0])
 }
 
 waitForHydration()
     .then(() => checkFlatpakPermissions())
     .then(() => initializeHostStore())
     .then(() => checkHostReachability())
-
-    .then(() => validateInstance())
+    .then(() => registerRcloneWindowListeners())
     .then(() => checkAlreadyRunning())
     .then(() => startRclone())
     .then(() => checkRclone())
+    .then(() => initJobWatcher())
     .then(() => handleDeepLink())
     .then(() => showStartup())
     .then(() => startupMounts())
-    .then(() => resumeTasks())
+    .then(() => initScheduler())
     .then(() => initTray())
     .catch(console.error)

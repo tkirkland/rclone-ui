@@ -1,389 +1,179 @@
 import * as Sentry from '@sentry/browser'
 import { message } from '@tauri-apps/plugin-dialog'
+import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
 import { platform } from '@tauri-apps/plugin-os'
 import pRetry from 'p-retry'
-import { useHostStore } from '../../store/host'
-import { useStore } from '../../store/memory'
+import { selectActiveConfigFile, useHostStore } from '../../store/host'
+import { type WatchedJob, useStore } from '../../store/memory'
+import { selectCurrentHost, usePersistedStore } from '../../store/persisted'
 import type { JobItem } from '../../types/jobs'
 import type { FlagValue } from '../../types/rclone'
+import { UserCancelledError, formatErrorMessage } from '../errors'
 import { getFsInfo } from '../format'
+import { dispatchNotification } from '../notifications'
 import { restartActiveRclone, runRcloneCli } from './cli'
 import rclone, { rcloneAsync } from './client'
-import { parseRcloneOptions } from './common'
+import {
+    type BisyncArgs,
+    type CopyArgs,
+    type DeleteArgs,
+    type MoveArgs,
+    type PurgeArgs,
+    type SyncArgs,
+    buildBisyncRequests,
+    buildCopyRequests,
+    buildDeleteRequests,
+    buildMoveRequests,
+    buildPurgeRequests,
+    buildSyncRequests,
+    serializeOptions,
+    toConfigParam,
+    toFilterParam,
+} from './requests'
 
 const RE_BACKSLASH = /\\/g
+const RE_DASH = /-/g
 const RE_PATH_SEPARATOR = /[/\\]/
 const RE_WINDOWS_EXTENDED_PATH = /(\/\/\?\/|\\\\\?\\)/
-const RE_WINDOWS_DRIVE_ROOT = /^:local:[a-zA-Z]:\/$/
 const RE_WINDOWS_DRIVE_LETTER = /^[a-zA-Z]:$/
 
-export async function startDryRun<T>(operation: () => Promise<T>): Promise<T> {
-    await rclone('/options/set', {
-        body: {
-            main: { DryRun: true },
-        },
-    })
-    try {
-        const result = await operation()
-        if (typeof result === 'number') {
-            useStore.setState((state) => ({
-                dryRunJobIds: [...state.dryRunJobIds, result],
-            }))
-        }
-        return result
-    } finally {
-        await rclone('/options/set', {
-            body: {
-                main: { DryRun: false },
-            },
-        })
-    }
+const RETRY_OPTIONS = {
+    retries: 3,
+    shouldRetry: ({ error }: { error: unknown }) => !(error instanceof UserCancelledError),
 }
 
-function serializeOptions(
-    remotePath: string,
-    options: {
-        remote?: Record<string, FlagValue>
-        global?: Record<string, FlagValue>
+// Dry-run state travels with each submission so a preview never changes daemon-global options or
+// suppresses a real job that overlaps it.
+export function startDryRun<T>(operation: (isDryRun: true) => Promise<T>): Promise<T> {
+    return operation(true)
+}
+
+// Makes a freshly submitted job visible to the main window's job watcher (via the shared
+// broadcast store), which emits the job started/completed/failed notifications.
+// Called BEFORE the launch verification so jobs that fail within the first second still get
+// a failure notification from the watcher.
+function registerWatchedJob(
+    jobid: number,
+    job: Pick<WatchedJob, 'operation' | 'sources' | 'destination'>
+) {
+    useStore.setState((state) => ({
+        watchedJobs: {
+            ...state.watchedJobs,
+            [jobid]: {
+                ...job,
+                jobid,
+                startedAt: Date.now(),
+            },
+        },
+    }))
+}
+
+function registerSubmittedJob(
+    jobid: number,
+    job: Pick<WatchedJob, 'operation' | 'sources' | 'destination'>,
+    isDryRun: boolean
+) {
+    if (isDryRun) {
+        useStore.setState((state) => ({
+            dryRunJobIds: state.dryRunJobIds.includes(jobid)
+                ? state.dryRunJobIds
+                : [...state.dryRunJobIds, jobid],
+        }))
+        return
+    }
+    registerWatchedJob(jobid, job)
+}
+
+async function hasStat(
+    path: string,
+    options?: {
+        configParam?: string
+        remotes?: Record<string, Record<string, FlagValue>>
     }
 ) {
-    console.log('[serializeRemoteOptions] ', remotePath)
-
-    const { remoteName, filePath, dirPath, type, root } = getFsInfo(remotePath)
-
-    console.log('[serializeRemoteOptions] ', remotePath, 'remoteName', remoteName)
-    console.log('[serializeRemoteOptions] ', remotePath, 'filePath', filePath)
-    console.log('[serializeRemoteOptions] ', remotePath, 'dirPath', dirPath)
-    console.log('[serializeRemoteOptions] ', remotePath, 'type', type)
-    console.log('[serializeRemoteOptions] ', remotePath, 'root', root)
-
-    let serialized = `${remoteName}`
-
-    if (
-        Object.keys(options.remote || {}).length > 0 ||
-        Object.keys(options.global || {}).length > 0
-    ) {
-        serialized += ','
-    }
-
-    if (options.remote && Object.keys(options.remote).length > 0) {
-        serialized += Object.entries(options.remote)
-            .map(([key, value]) => `${key}="${value}"`)
-            .join(',')
-    }
-
-    if (options.global && Object.keys(options.global).length > 0) {
-        serialized += Object.entries(options.global)
-            .map(([key, value]) => `global.${key}="${value}"`)
-            .join(',')
-    }
-
-    serialized += ':'
-
-    if (remoteName === ':local') {
-        if (RE_WINDOWS_DRIVE_ROOT.test(root)) {
-            const driveLetter = root.slice(7)
-            console.log(
-                '[serializeRemoteOptions] ',
-                remotePath,
-                'adding Windows drive',
-                driveLetter
-            )
-            serialized += driveLetter
-        } else {
-            console.log('[serializeRemoteOptions] ', remotePath, 'adding / for Unix local')
-            serialized += '/'
-        }
-    }
-
-    if (type === 'folder') {
-        serialized += dirPath
-    } else {
-        serialized += filePath
-    }
-
-    console.log('[serializeRemoteOptions] ', remotePath, 'serialized', serialized)
-
-    return serialized
-}
-
-async function hasStat(path: string) {
-    try {
-        const { root, filePath } = getFsInfo(path)
-        const r = await rclone('/operations/stat', {
-            params: {
-                query: {
-                    fs: root === ':local:' ? ':local:/' : root,
-                    remote: filePath,
-                },
-            },
+    // No try/catch: a transport failure must propagate as the real error instead of being
+    // masked as "Source does not exist". A genuinely missing path returns a response with no
+    // item, which still yields false.
+    const { root, filePath, remoteName } = getFsInfo(path)
+    const remoteOptions = options?.remotes?.[remoteName]
+    let fs = root === ':local:' ? ':local:/' : root
+    if (remoteOptions && Object.keys(remoteOptions).length > 0) {
+        fs = serializeOptions(root.endsWith('/') ? root.slice(0, -1) : root, {
+            remote: remoteOptions,
         })
-        if (!r || !r.item) {
-            return false
-        }
-        return true
-    } catch {
-        return false
     }
+    const r = await rclone('/operations/stat', {
+        params: {
+            query: {
+                fs,
+                remote: filePath,
+                ...(options?.configParam ? { _config: options.configParam } : {}),
+            },
+        },
+    })
+    return !!r?.item
 }
 
-export async function startCopy({
-    sources,
-    destination,
-    options,
-}: {
-    sources: string[]
-    destination: string
-    options: {
-        copy?: Record<string, FlagValue>
-        config?: Record<string, FlagValue>
-        filter?: Record<string, FlagValue>
-        remotes?: Record<string, Record<string, FlagValue>>
-    }
-}) {
+export async function startCopy(args: CopyArgs, isDryRun = false) {
     console.log('[startCopy] starting', {
-        sources,
-        destination,
-        optionKeys: Object.keys(options),
+        sources: args.sources,
+        destination: args.destination,
+        optionKeys: Object.keys(args.options),
     })
 
-    for (const source of sources) {
-        const sourceExists = await hasStat(source)
+    const [request] = buildCopyRequests(args)
+
+    for (const source of args.sources) {
+        const sourceExists = await hasStat(source, {
+            configParam: request.body._config,
+            remotes: args.options.remotes,
+        })
         if (!sourceExists) {
             throw new Error(`Source does not exist, ${source} is missing`)
         }
     }
 
-    if (
-        sources.length > 1 &&
-        options.filter &&
-        ('include' in options.filter || 'include_from' in options.filter)
-    ) {
-        throw new Error('Include rules are not supported with multiple sources')
-    }
-
-    const mergedOptions = {
-        ...(options.config || {}),
-        ...(options.copy || {}),
-        ...(options.filter || {}),
-    }
-
-    const pendingJobs: Parameters<typeof startBatch>[0] = []
-    const handledSourcePaths: Record<string, true> = {}
-    const folderSources = sources.filter((path) => path.endsWith('/') || path.endsWith('\\'))
-
-    console.log('[Copy] ======DST INFO====== ', destination, ' ====================')
-    const {
-        root: dstRoot,
-        dirPath: dstDirPath,
-        fullDirPath: dstFullDirPath,
-        remoteName: dstRemoteName,
-    } = getFsInfo(destination)
-
-    console.log('[Copy] ======DST INFO====== ', destination, ' ====================')
-
-    const dstOptions =
-        options.remotes && dstRemoteName && dstRemoteName in options.remotes
-            ? options.remotes[dstRemoteName]
-            : undefined
-
-    for (const source of sources) {
-        console.log('[Copy] ======START====== ', source, ' ====================')
-        if (handledSourcePaths[source]) {
-            console.log('[Copy] skipping because source is already handled', source)
-            continue
-        }
-
-        handledSourcePaths[source] = true
-
-        console.log('[Copy] ======SRC INFO====== ', source, ' ====================')
-
-        const {
-            root: srcRoot,
-            filePath: srcFilePath,
-            fullDirPath: srcFullDirPath,
-            type: srcType,
-            name: srcName,
-            remoteName: srcRemoteName,
-        } = getFsInfo(source)
-
-        console.log('[Copy] ======SRC INFO====== ', source, ' ====================')
-
-        const srcOptions =
-            options.remotes && srcRemoteName && srcRemoteName in options.remotes
-                ? options.remotes[srcRemoteName]
-                : undefined
-
-        if (srcType === 'folder') {
-            const jobParams: Parameters<typeof startBatch>[0][number] = {
-                _path: 'sync/copy',
-                srcFs: serializeOptions(srcFullDirPath, {
-                    remote: srcOptions,
-                    global: mergedOptions,
-                }),
-                dstFs: serializeOptions(`${dstFullDirPath}${srcName}`, {
-                    remote: dstOptions,
-                }),
-                createEmptySrcDirs: true,
-            }
-
-            pendingJobs.push(jobParams)
-            continue
-        }
-
-        if (folderSources.some((folder) => source.startsWith(folder))) {
-            console.log(
-                '[Copy] skipping because source or parent folder is already handled',
-                source
-            )
-            continue
-        }
-
-        console.log('[Copy] ', source, 'srcRoot', srcRoot, srcFilePath)
-        console.log('[Copy] ', destination, 'dstRoot', dstRoot, dstDirPath)
-
-        const jobParams: Parameters<typeof startBatch>[0][number] = {
-            _path: 'operations/copyfile',
-            srcFs: serializeOptions(srcRoot, {
-                remote: srcOptions,
-                global: mergedOptions,
-            }),
-            srcRemote: srcFilePath,
-            dstFs: serializeOptions(dstRoot, {
-                remote: dstOptions,
-            }),
-            dstRemote: `${dstDirPath === '/' ? '' : dstDirPath}${srcName}`,
-        }
-
-        pendingJobs.push(jobParams)
-    }
-
-    console.log('[startCopy] submitting batch', { jobCount: pendingJobs.length })
-    return startBatch(pendingJobs)
+    console.log('[startCopy] submitting batch', { jobCount: request.body.inputs.length })
+    return startBatch(
+        request.body.inputs,
+        {
+            operation: 'copy',
+            sources: args.sources,
+            destination: args.destination,
+        },
+        { isDryRun, configParam: request.body._config }
+    )
 }
 
-export async function startMove({
-    sources,
-    destination,
-    options,
-}: {
-    sources: string[]
-    destination: string
-    options: {
-        move?: Record<string, FlagValue>
-        config?: Record<string, FlagValue>
-        filter?: Record<string, FlagValue>
-        remotes?: Record<string, Record<string, FlagValue>>
-    }
-}) {
+export async function startMove(args: MoveArgs, isDryRun = false) {
     console.log('[startMove] starting', {
-        sources,
-        destination,
-        optionKeys: Object.keys(options),
+        sources: args.sources,
+        destination: args.destination,
+        optionKeys: Object.keys(args.options),
     })
 
-    for (const source of sources) {
-        const sourceExists = await hasStat(source)
+    const [request] = buildMoveRequests(args)
+
+    for (const source of args.sources) {
+        const sourceExists = await hasStat(source, {
+            configParam: request.body._config,
+            remotes: args.options.remotes,
+        })
         if (!sourceExists) {
             throw new Error(`Source does not exist, ${source} is missing`)
         }
     }
 
-    if (
-        sources.length > 1 &&
-        options.filter &&
-        ('include' in options.filter || 'include_from' in options.filter)
-    ) {
-        throw new Error('Include rules are not supported with multiple sources')
-    }
-
-    const mergedOptions = {
-        ...(options.config || {}),
-        ...(options.move || {}),
-        ...(options.filter || {}),
-    }
-
-    const pendingJobs: Parameters<typeof startBatch>[0] = []
-    const handledSourcePaths: Record<string, true> = {}
-    const folderSources = sources.filter((path) => path.endsWith('/') || path.endsWith('\\'))
-
-    const {
-        root: dstRoot,
-        dirPath: dstDirPath,
-        fullDirPath: dstFullDirPath,
-        remoteName: dstRemoteName,
-    } = getFsInfo(destination)
-
-    const dstOptions =
-        options.remotes && dstRemoteName && dstRemoteName in options.remotes
-            ? options.remotes[dstRemoteName]
-            : undefined
-
-    for (const source of sources) {
-        if (handledSourcePaths[source]) {
-            console.log('[Move] skipping because source is already handled', source)
-            continue
-        }
-
-        handledSourcePaths[source] = true
-
-        const {
-            root: srcRoot,
-            filePath: srcFilePath,
-            fullDirPath: srcFullDirPath,
-            type: srcType,
-            name: srcName,
-            remoteName: srcRemoteName,
-        } = getFsInfo(source)
-
-        const srcOptions =
-            options.remotes && srcRemoteName && srcRemoteName in options.remotes
-                ? options.remotes[srcRemoteName]
-                : undefined
-
-        if (srcType === 'folder') {
-            const jobParams: Parameters<typeof startBatch>[0][number] = {
-                _path: 'sync/move',
-                srcFs: serializeOptions(srcFullDirPath, {
-                    remote: srcOptions,
-                    global: mergedOptions,
-                }),
-                dstFs: serializeOptions(`${dstFullDirPath}${srcName}`, {
-                    remote: dstOptions,
-                }),
-                createEmptySrcDirs: true,
-            }
-
-            pendingJobs.push(jobParams)
-            continue
-        }
-
-        if (folderSources.some((folder) => source.startsWith(folder))) {
-            console.log(
-                '[Move] skipping because source or parent folder is already handled',
-                source
-            )
-            continue
-        }
-
-        const jobParams: Parameters<typeof startBatch>[0][number] = {
-            _path: 'operations/movefile',
-            srcFs: serializeOptions(srcRoot, {
-                remote: srcOptions,
-                global: mergedOptions,
-            }),
-            srcRemote: srcFilePath,
-            dstFs: serializeOptions(dstRoot, {
-                remote: dstOptions,
-            }),
-            dstRemote: `${dstDirPath === '/' ? '' : dstDirPath}${srcName}`,
-        }
-
-        pendingJobs.push(jobParams)
-    }
-
-    console.log('[startMove] submitting batch', { jobCount: pendingJobs.length })
-    return startBatch(pendingJobs)
+    console.log('[startMove] submitting batch', { jobCount: request.body.inputs.length })
+    return startBatch(
+        request.body.inputs,
+        {
+            operation: 'move',
+            sources: args.sources,
+            destination: args.destination,
+        },
+        { isDryRun, configParam: request.body._config }
+    )
 }
 
 /* JOBS */
@@ -588,7 +378,26 @@ export async function listTransfers() {
 }
 
 /* OPERATIONS */
-export async function startMount({
+// Wraps the mount flow so every caller (Mount page, tray, startup automounts) emits the
+// mount.failed webhook event without per-site wiring. Rethrows for the caller's own handling.
+export async function startMount(params: Parameters<typeof startMountInner>[0]) {
+    try {
+        return await startMountInner(params)
+    } catch (error) {
+        dispatchNotification('mount.failed', {
+            title: 'Mount failed',
+            body: `Failed to mount ${params.source}: ${formatErrorMessage(error, 'Unknown error')}`,
+            data: {
+                source: params.source,
+                destination: params.destination,
+                error: formatErrorMessage(error, String(error)),
+            },
+        })
+        throw error
+    }
+}
+
+async function startMountInner({
     source,
     destination,
     options,
@@ -627,11 +436,59 @@ export async function startMount({
         mountOptions.volname = `${sourcePath}-${Math.random().toString(36).substring(2, 3).toUpperCase()}`
     }
 
-    const mergedOptions = {
-        ...mountOptions,
-        ...(options.config || {}),
-        ...(options.vfs || {}),
-        ...(options.filter || {}),
+    // `_filter` is the correct RC channel for mount filters (rclone's own RC docs say so), so we
+    // send it as a proper param rather than smuggling it into the fs string. Note: current rclone
+    // ignores it for mounts — mountRc has the filter on its ctx, but Mount() builds the VFS with
+    // context.Background() and discards it (only the *global* filter, set via CLI --exclude, reaches
+    // a mount). Rclone still parses this value, but it only affects the mount if upstream threads
+    // that request context into the VFS.
+    const configParam = toConfigParam(options.config)
+    const filterParam = toFilterParam(options.filter)
+
+    const vfsOptions = { ...(options.vfs || {}) }
+
+    // mountOpt/vfsOpt take JSON keyed by Go field names, so rekey the flag-name groups
+    // ("vfs_cache_mode" → "CacheMode") via the options/info registry before sending. Unknown
+    // keys pass through untouched — rclone ignores unrecognized fields.
+    const toStructOptions = (
+        flags: Record<string, FlagValue>,
+        infos: { Name: string; FieldName: string; Type: string }[] | undefined
+    ) => {
+        const optionsByName = new Map((infos || []).map((info) => [info.Name, info]))
+        return JSON.stringify(
+            Object.fromEntries(
+                Object.entries(flags).map(([key, value]) => {
+                    const normalized = (key.startsWith('--') ? key.slice(2) : key).replace(
+                        RE_DASH,
+                        '_'
+                    )
+                    const option = optionsByName.get(normalized)
+                    return [
+                        option?.FieldName || key,
+                        option?.Type === 'stringArray' && !Array.isArray(value) && value !== null
+                            ? [String(value)]
+                            : value,
+                    ]
+                })
+            )
+        )
+    }
+
+    let structOptions: { mountOpt?: string; vfsOpt?: string } = {}
+    if (Object.keys(mountOptions).length > 0 || Object.keys(vfsOptions).length > 0) {
+        const optionsInfo = await pRetry(
+            async () =>
+                await rclone('/options/info', { params: { query: { blocks: 'mount,vfs' } } }),
+            RETRY_OPTIONS
+        )
+        structOptions = {
+            ...(Object.keys(mountOptions).length > 0
+                ? { mountOpt: toStructOptions(mountOptions, optionsInfo?.mount) }
+                : {}),
+            ...(Object.keys(vfsOptions).length > 0
+                ? { vfsOpt: toStructOptions(vfsOptions, optionsInfo?.vfs) }
+                : {}),
+        }
     }
 
     const { fullDirPath: srcFullDirPath, remoteName: srcRemoteName } = getFsInfo(source)
@@ -648,17 +505,17 @@ export async function startMount({
                     params: {
                         query: {
                             fs: serializeOptions(srcFullDirPath, {
-                                global: mergedOptions,
                                 remote: srcOptions,
                             }),
                             mountPoint: '*',
-                            mount: 'nfsmount',
+                            // No mountType — Windows uses rclone's default resolution (cmount/WinFsp)
+                            ...structOptions,
+                            ...(configParam ? { _config: configParam } : {}),
+                            ...(filterParam ? { _filter: filterParam } : {}),
                         },
                     },
                 }),
-            {
-                retries: 3,
-            }
+            RETRY_OPTIONS
         )
         return response?.mountPoint
     }
@@ -685,9 +542,7 @@ export async function startMount({
                         },
                     },
                 }),
-            {
-                retries: 3,
-            }
+            RETRY_OPTIONS
         )
         if (!r || !r.item) {
             directoryExists = false
@@ -717,9 +572,7 @@ export async function startMount({
                             },
                         },
                     }),
-                {
-                    retries: 3,
-                }
+                RETRY_OPTIONS
             )
             isEmpty = !list || list.length === 0
         } catch (err) {
@@ -742,9 +595,7 @@ export async function startMount({
                                 },
                             },
                         }),
-                    {
-                        retries: 3,
-                    }
+                    RETRY_OPTIONS
                 )
             } catch (err) {
                 console.error('[Mount] Error removing directory:', err)
@@ -762,9 +613,7 @@ export async function startMount({
                             },
                         },
                     }),
-                {
-                    retries: 3,
-                }
+                RETRY_OPTIONS
             )
         } catch (error) {
             console.error('[Mount] Error creating directory:', error)
@@ -778,7 +627,6 @@ export async function startMount({
                 params: {
                     query: {
                         fs: serializeOptions(srcFullDirPath, {
-                            global: mergedOptions,
                             remote: srcOptions,
                         }),
                         mountPoint: (() => {
@@ -794,87 +642,45 @@ export async function startMount({
                             }
                             return mp
                         })(),
-                        mount: 'nfsmount',
+                        ...(currentPlatform === 'macos' ? { mountType: 'nfsmount' } : {}),
+                        ...structOptions,
+                        ...(configParam ? { _config: configParam } : {}),
+                        ...(filterParam ? { _filter: filterParam } : {}),
                     },
                 },
             }),
-        {
-            retries: 3,
-        }
+        RETRY_OPTIONS
     )
 }
 
-export async function startBisync({
-    source,
-    destination,
-    options,
-}: {
-    source: string
-    destination: string
-    options: {
-        config?: Record<string, FlagValue>
-        bisync?: Record<string, FlagValue>
-        filter?: Record<string, FlagValue>
-        remotes?: Record<string, Record<string, FlagValue>>
-        outer?: Record<string, FlagValue>
-    }
-}) {
-    const sourceExists = await hasStat(source)
-    if (!sourceExists) {
-        throw new Error(`Source does not exist, ${source} is missing`)
-    }
-
-    const mergedOptions = {
-        ...(options.config || {}),
-        ...(options.bisync || {}),
-        ...(options.filter || {}),
-    }
-
-    const { fullDirPath: srcFullDirPath, remoteName: srcRemoteName } = getFsInfo(source)
-    const { fullDirPath: dstFullDirPath, remoteName: dstRemoteName } = getFsInfo(destination)
-
-    const srcOptions =
-        options.remotes && srcRemoteName && srcRemoteName in options.remotes
-            ? options.remotes[srcRemoteName]
-            : undefined
-
-    const dstOptions =
-        options.remotes && dstRemoteName && dstRemoteName in options.remotes
-            ? options.remotes[dstRemoteName]
-            : undefined
+// Shared submission path for the async query endpoints (/sync/sync, /sync/bisync): submit,
+// register with the watcher, verify the launch didn't fail within the first second.
+async function submitAsyncQuery(
+    endpoint: '/sync/sync' | '/sync/bisync',
+    body: Record<string, any>,
+    watch: Pick<WatchedJob, 'operation' | 'sources' | 'destination'>,
+    isDryRun = false
+) {
+    // The builders emit body-form requests for the headless runner; the live client submits the
+    // same parameters as a query (rclone's RC treats them identically).
+    const { _async, ...query } = body
 
     const r = await pRetry(
         async () =>
-            await rcloneAsync('/sync/bisync', {
+            await rcloneAsync(endpoint, {
                 params: {
-                    query: {
-                        path1: serializeOptions(srcFullDirPath, {
-                            global: mergedOptions,
-                            remote: srcOptions,
-                        }),
-                        path2: serializeOptions(dstFullDirPath, {
-                            remote: dstOptions,
-                        }),
-                        ...(options.outer && Object.keys(options.outer).length > 0
-                            ? Object.fromEntries(
-                                  Object.entries(options.outer).map(([key, value]) => [
-                                      key,
-                                      Array.isArray(value) ? value.join(',') : value,
-                                  ])
-                              )
-                            : {}),
-                    },
+                    query: query as any,
                 },
             }),
-        {
-            retries: 3,
-        }
+        RETRY_OPTIONS
     )
 
     if (!r?.jobid) {
         console.error('Failed to start job: missing jobid', r)
         throw new Error('Failed to start operation')
     }
+
+    registerSubmittedJob(r.jobid, watch, isDryRun)
 
     await new Promise((resolve) => setTimeout(resolve, 1000))
 
@@ -887,9 +693,7 @@ export async function startBisync({
                     },
                 },
             }),
-        {
-            retries: 3,
-        }
+        RETRY_OPTIONS
     ).catch(() => null)
 
     console.log('jobStatus', JSON.stringify(jobStatus, null, 2))
@@ -907,246 +711,81 @@ export async function startBisync({
     return r.jobid
 }
 
-export async function startSync({
-    source,
-    destination,
-    options,
-}: {
-    source: string
-    destination: string
-    options: {
-        config?: Record<string, FlagValue>
-        sync?: Record<string, FlagValue>
-        filter?: Record<string, FlagValue>
-        remotes?: Record<string, Record<string, FlagValue>>
-    }
-}) {
-    const sourceExists = await hasStat(source)
+export async function startBisync(args: BisyncArgs) {
+    const [request] = buildBisyncRequests(args)
+    const sourceExists = await hasStat(args.source, {
+        configParam: request.body._config,
+        remotes: args.options.remotes,
+    })
     if (!sourceExists) {
-        throw new Error(`Source does not exist, ${source} is missing`)
+        throw new Error(`Source does not exist, ${args.source} is missing`)
     }
 
-    const mergedOptions = {
-        ...(options.config || {}),
-        ...(options.sync || {}),
-        ...(options.filter || {}),
+    return submitAsyncQuery('/sync/bisync', request.body, {
+        operation: 'bisync',
+        sources: [args.source],
+        destination: args.destination,
+    })
+}
+
+export async function startSync(args: SyncArgs, isDryRun = false) {
+    const [request] = buildSyncRequests(args)
+    const sourceExists = await hasStat(args.source, {
+        configParam: request.body._config,
+        remotes: args.options.remotes,
+    })
+    if (!sourceExists) {
+        throw new Error(`Source does not exist, ${args.source} is missing`)
     }
 
-    const { fullDirPath: srcFullDirPath, remoteName: srcRemoteName } = getFsInfo(source)
-    const { fullDirPath: dstFullDirPath, remoteName: dstRemoteName } = getFsInfo(destination)
-
-    const srcOptions =
-        options.remotes && srcRemoteName && srcRemoteName in options.remotes
-            ? options.remotes[srcRemoteName]
-            : undefined
-
-    const dstOptions =
-        options.remotes && dstRemoteName && dstRemoteName in options.remotes
-            ? options.remotes[dstRemoteName]
-            : undefined
-
-    const r = await pRetry(
-        async () =>
-            await rcloneAsync('/sync/sync', {
-                params: {
-                    query: {
-                        srcFs: serializeOptions(srcFullDirPath, {
-                            global: mergedOptions,
-                            remote: srcOptions,
-                        }),
-                        dstFs: serializeOptions(dstFullDirPath, {
-                            remote: dstOptions,
-                        }),
-                        createEmptySrcDirs: true,
-                    },
-                },
-            }),
+    return submitAsyncQuery(
+        '/sync/sync',
+        request.body,
         {
-            retries: 3,
-        }
+            operation: 'sync',
+            sources: [args.source],
+            destination: args.destination,
+        },
+        isDryRun
     )
-
-    if (!r?.jobid) {
-        console.error('Failed to start job: missing jobid', r)
-        throw new Error('Failed to start operation')
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, 1000))
-
-    const jobStatus = await pRetry(
-        async () =>
-            await rclone('/job/status', {
-                params: {
-                    query: {
-                        jobid: r.jobid,
-                    },
-                },
-            }),
-        {
-            retries: 3,
-        }
-    ).catch(() => null)
-
-    console.log('jobStatus', JSON.stringify(jobStatus, null, 2))
-
-    if (!jobStatus) {
-        console.error('Failed to start job:', r.jobid)
-        throw new Error('Failed to start operation')
-    }
-
-    if (jobStatus.error) {
-        console.error('Failed to start job:', r.jobid, jobStatus.error)
-        throw new Error(jobStatus.error)
-    }
-
-    return r.jobid
 }
 
-export async function startDelete({
-    sources,
-    options,
-}: {
-    sources: string[]
-    options: {
-        filter?: Record<string, FlagValue>
-        config?: Record<string, FlagValue>
-        remotes?: Record<string, Record<string, FlagValue>>
-    }
-}) {
+export async function startDelete({ sources, options }: DeleteArgs, isDryRun = false) {
+    const [request] = buildDeleteRequests({ sources, options })
     for (const source of sources) {
-        const sourceExists = await hasStat(source)
+        const sourceExists = await hasStat(source, {
+            configParam: request.body._config,
+            remotes: options.remotes,
+        })
         if (!sourceExists) {
             throw new Error(`Source does not exist, ${source} is missing`)
         }
     }
 
-    if (
-        sources.length > 1 &&
-        options.filter &&
-        ('include' in options.filter || 'include_from' in options.filter)
-    ) {
-        throw new Error('Include rules are not supported with multiple sources')
-    }
-
-    const mergedOptions = {
-        ...(options.config || {}),
-        ...(options.filter || {}),
-    }
-
-    const pendingJobs: Parameters<typeof startBatch>[0] = []
-    const handledSourcePaths: Record<string, true> = {}
-    const folderSources = sources.filter((path) => path.endsWith('/') || path.endsWith('\\'))
-
-    for (const source of sources) {
-        if (handledSourcePaths[source]) {
-            console.log('[Delete] skipping because source is already handled', source)
-            continue
-        }
-
-        handledSourcePaths[source] = true
-
-        const {
-            root: srcRoot,
-            filePath: srcFilePath,
-            type: srcType,
-            remoteName: srcRemoteName,
-        } = getFsInfo(source)
-
-        const srcOptions =
-            options.remotes && srcRemoteName && srcRemoteName in options.remotes
-                ? options.remotes[srcRemoteName]
-                : undefined
-
-        if (srcType === 'folder') {
-            const jobParams: Parameters<typeof startBatch>[0][number] = {
-                _path: 'operations/delete',
-                fs: serializeOptions(source, {
-                    global: mergedOptions,
-                    remote: srcOptions,
-                }),
-            }
-            pendingJobs.push(jobParams)
-            continue
-        }
-
-        if (folderSources.some((folder) => source.startsWith(folder))) {
-            console.log(
-                '[Delete] skipping because source or parent folder is already handled',
-                source
-            )
-            continue
-        }
-
-        const jobParams: Parameters<typeof startBatch>[0][number] = {
-            _path: 'operations/deletefile',
-            fs: serializeOptions(srcRoot, {
-                global: mergedOptions,
-                remote: srcOptions,
-            }),
-            remote: srcFilePath,
-        }
-        pendingJobs.push(jobParams)
-    }
-
-    return startBatch(pendingJobs)
+    return startBatch(
+        request.body.inputs,
+        { operation: 'delete', sources },
+        { isDryRun, configParam: request.body._config }
+    )
 }
 
-export async function startPurge({
-    sources,
-    options,
-}: {
-    sources: string[]
-    options: {
-        config?: Record<string, FlagValue>
-        remotes?: Record<string, Record<string, FlagValue>>
-    }
-}) {
+export async function startPurge({ sources, options }: PurgeArgs) {
+    const [request] = buildPurgeRequests({ sources, options })
     for (const source of sources) {
-        const sourceExists = await hasStat(source)
+        const sourceExists = await hasStat(source, {
+            configParam: request.body._config,
+            remotes: options.remotes,
+        })
         if (!sourceExists) {
             throw new Error(`Source does not exist, ${source} is missing`)
         }
     }
 
-    const pendingJobs: Parameters<typeof startBatch>[0] = []
-    const handledSourcePaths: Record<string, true> = {}
-
-    for (const source of sources) {
-        if (handledSourcePaths[source]) {
-            console.log('[Purge] skipping because source is already handled', source)
-            continue
-        }
-
-        handledSourcePaths[source] = true
-
-        const {
-            root: srcRoot,
-            dirPath: srcDirPath,
-            type: srcType,
-            remoteName: srcRemoteName,
-        } = getFsInfo(source)
-
-        if (srcType !== 'folder') {
-            throw new Error('Only folders can be purged')
-        }
-
-        const srcOptions =
-            options.remotes && srcRemoteName && srcRemoteName in options.remotes
-                ? options.remotes[srcRemoteName]
-                : undefined
-
-        const jobParams: Parameters<typeof startBatch>[0][number] = {
-            _path: 'operations/purge',
-            fs: serializeOptions(srcRoot, {
-                global: options.config,
-                remote: srcOptions,
-            }),
-            remote: srcDirPath,
-        }
-        pendingJobs.push(jobParams)
-    }
-
-    return startBatch(pendingJobs)
+    return startBatch(
+        request.body.inputs,
+        { operation: 'purge', sources },
+        { configParam: request.body._config }
+    )
 }
 
 export async function startServe({
@@ -1169,14 +808,8 @@ export async function startServe({
                 type,
                 fs,
                 addr,
-                _filter:
-                    _filter && Object.keys(_filter).length > 0
-                        ? JSON.stringify(parseRcloneOptions(_filter))
-                        : undefined,
-                _config:
-                    _config && Object.keys(_config).length > 0
-                        ? JSON.stringify(parseRcloneOptions(_config))
-                        : undefined,
+                _filter: toFilterParam(_filter),
+                _config: toConfigParam(_config),
                 ...(props && Object.keys(props).length > 0
                     ? Object.fromEntries(
                           Object.entries(props).map(([key, value]) => [
@@ -1190,7 +823,11 @@ export async function startServe({
     })
 }
 
-export async function startBatch(inputs: ({ _path: string } & Record<string, any>)[]) {
+export async function startBatch(
+    inputs: ({ _path: string } & Record<string, any>)[],
+    meta?: Partial<Pick<WatchedJob, 'operation' | 'sources' | 'destination'>>,
+    options?: { isDryRun?: boolean; configParam?: string }
+) {
     console.log('[startBatch] starting batch operation', {
         inputCount: inputs.length,
         paths: inputs.map((i) => i._path),
@@ -1202,15 +839,24 @@ export async function startBatch(inputs: ({ _path: string } & Record<string, any
             await rclone('/job/batch', {
                 body: {
                     inputs,
+                    ...(options?.configParam ? { _config: options.configParam } : {}),
                     _async: true,
                 },
             }),
-        {
-            retries: 3,
-        }
+        RETRY_OPTIONS
     )
 
     console.log('[startBatch] job created', { jobid: r.jobid })
+
+    registerSubmittedJob(
+        r.jobid,
+        {
+            operation: meta?.operation ?? 'batch',
+            sources: meta?.sources,
+            destination: meta?.destination,
+        },
+        options?.isDryRun ?? false
+    )
 
     await new Promise((resolve) => setTimeout(resolve, 1000))
 
@@ -1223,9 +869,7 @@ export async function startBatch(inputs: ({ _path: string } & Record<string, any
                     },
                 },
             }),
-        {
-            retries: 3,
-        }
+        RETRY_OPTIONS
     ).catch(() => null)
 
     console.log('[startBatch] jobStatus', {
@@ -1272,6 +916,7 @@ export async function startBatch(inputs: ({ _path: string } & Record<string, any
     }
 
     console.log('[startBatch] SUCCESS', { jobid: r.jobid })
+
     return r.jobid
 }
 
@@ -1280,7 +925,7 @@ export async function removeConfigPassword() {
     console.log('[removeConfigPassword]')
 
     const state = useHostStore.getState()
-    const activeConfig = state.activeConfigFile
+    const activeConfig = selectActiveConfigFile(state)
 
     if (!activeConfig || !activeConfig.id) {
         throw new Error('No active configuration selected.')
@@ -1317,15 +962,11 @@ export async function setConfigPassword(options: {
     console.log('[setConfigPassword]')
 
     const state = useHostStore.getState()
-    const activeConfig = state.activeConfigFile
+    const activeConfig = selectActiveConfigFile(state)
 
     if (!activeConfig || !activeConfig.id) {
         throw new Error('No active configuration selected.')
     }
-
-    // if (!activeConfig.isEncrypted) {
-    //     throw new Error('Configuration is not encrypted.')
-    // }
 
     const password = options.password
 
@@ -1388,5 +1029,28 @@ export async function fetchMountList() {
     } catch (error) {
         console.error('[fetchMountList] failed to fetch active mounts', error)
         return []
+    }
+}
+
+export async function uploadEmptyFile(fs: string, remote: string) {
+    const currentHost = selectCurrentHost(usePersistedStore.getState())
+    if (!currentHost) throw new Error('No current host')
+
+    let authHeader = ''
+    if (currentHost.authUser && currentHost.authPassword) {
+        authHeader = `Basic ${btoa(`${currentHost.authUser}:${currentHost.authPassword}`)}`
+    }
+
+    const body = new FormData()
+    body.append('file0', new File([], '.empty'))
+
+    const params = new URLSearchParams({ fs, remote })
+    const response = await tauriFetch(`${currentHost.url}/operations/uploadfile?${params}`, {
+        method: 'POST',
+        headers: authHeader ? { 'Authorization': authHeader } : undefined,
+        body,
+    })
+    if (!response.ok) {
+        throw new Error(`${response.status} ${response.statusText}`)
     }
 }

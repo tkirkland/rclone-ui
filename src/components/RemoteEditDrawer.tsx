@@ -1,13 +1,14 @@
 import { Drawer, DrawerBody, DrawerContent, DrawerFooter, DrawerHeader, cn } from '@heroui/react'
 import { Button, Select, SelectItem } from '@heroui/react'
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { message } from '@tauri-apps/plugin-dialog'
 import { platform } from '@tauri-apps/plugin-os'
 import { ChevronDown, ChevronUp } from 'lucide-react'
 import { useMemo, useState } from 'react'
+import { onErrorDialog } from '../../lib/errors'
+import { useRemoteConfig } from '../../lib/hooks'
 import queryClient from '../../lib/query'
 import rclone from '../../lib/rclone/client'
-import { OVERRIDES } from '../../lib/rclone/overrides'
+import { INTERACTIVE_CONFIG_TYPES, OVERRIDES, OWN_OAUTH_TYPES } from '../../lib/rclone/overrides'
 import RemoteField from './RemoteField'
 
 export default function RemoteEditDrawer({
@@ -22,18 +23,7 @@ export default function RemoteEditDrawer({
     const [config, setConfig] = useState<Record<string, any>>({})
     const [showMoreOptions, setShowMoreOptions] = useState(false)
 
-    const remoteConfigQuery = useQuery({
-        queryKey: ['remote', remoteName, 'config'],
-        queryFn: async () => {
-            return await rclone('/config/get', {
-                params: {
-                    query: {
-                        name: remoteName,
-                    },
-                },
-            })
-        },
-    })
+    const remoteConfigQuery = useRemoteConfig(remoteName)
 
     const remoteConfig = useMemo(() => remoteConfigQuery.data, [remoteConfigQuery.data])
 
@@ -93,16 +83,35 @@ export default function RemoteEditDrawer({
         [currentBackend, remoteConfig]
     )
 
+    // Google Drive / Google Photos require the user's own OAuth credentials (rclone is retiring its
+    // shared client-id). Check the effective config (saved values + pending edits) so a legacy
+    // remote missing credentials can't be saved until they're added, while a remote that already
+    // has them stays editable.
+    const missingCredentials = useMemo(() => {
+        const effective = { ...remoteConfig, ...config }
+        return OWN_OAUTH_TYPES.includes(effective.type ?? '')
+            ? ['client_id', 'client_secret'].filter((f) => !(effective[f] || '').trim())
+            : []
+    }, [remoteConfig, config])
+
     const updateRemoteMutation = useMutation({
         mutationFn: async (updatedRemoteConfig: Record<string, any>) => {
             console.log('[RemoteEditDrawer] updatedRemoteConfig', updatedRemoteConfig)
 
             if (Object.keys(updatedRemoteConfig).length > 0) {
+                const isInteractiveType = INTERACTIVE_CONFIG_TYPES.includes(
+                    remoteConfig?.type ?? ''
+                )
                 await rclone('/config/update', {
                     params: {
                         query: {
                             name: remoteName,
                             parameters: JSON.stringify(updatedRemoteConfig),
+                            opt: JSON.stringify(
+                                isInteractiveType
+                                    ? { obscure: true, nonInteractive: true }
+                                    : { obscure: true }
+                            ),
                         },
                     },
                 })
@@ -111,7 +120,9 @@ export default function RemoteEditDrawer({
             return updatedRemoteConfig
         },
         onSuccess: async (updatedRemoteConfig) => {
-            await rclone('/fscache/clear').catch()
+            // Best-effort cache clear; a failure here must not reject onSuccess and leave the
+            // drawer stranded open after an otherwise-successful save.
+            await rclone('/fscache/clear').catch(() => null)
             queryClient.setQueryData(
                 ['remote', remoteName, 'config'],
                 (old?: typeof remoteConfig) => ({
@@ -119,15 +130,15 @@ export default function RemoteEditDrawer({
                     ...updatedRemoteConfig,
                 })
             )
+            // Capabilities can change with the config (e.g. s3 provider, webdav vendor, a wrapped
+            // backend's target), so drop the cached fsinfo probe and let consumers re-fetch.
+            queryClient.invalidateQueries({ queryKey: ['remote', remoteName, 'fsinfo'] })
             onClose()
         },
-        onError: async (error) => {
-            console.error('Failed to update remote:', error)
-            await message(error instanceof Error ? error.message : 'Unknown error occurred', {
-                title: 'Could not update remote',
-                kind: 'error',
-            })
-        },
+        onError: onErrorDialog('Could not update remote', 'Unknown error occurred', {
+            capture: false,
+            log: ['Failed to update remote:'],
+        }),
     })
 
     // if (!remoteConfig) return null
@@ -238,7 +249,9 @@ export default function RemoteEditDrawer({
                             </Button>
                             <Button
                                 color="primary"
-                                isDisabled={updateRemoteMutation.isPending}
+                                isDisabled={
+                                    updateRemoteMutation.isPending || missingCredentials.length > 0
+                                }
                                 data-focus-visible="false"
                                 onPress={() => {
                                     updateRemoteMutation.mutate(config)

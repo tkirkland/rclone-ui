@@ -1,50 +1,19 @@
-import { useQuery } from '@tanstack/react-query'
 import { invoke } from '@tauri-apps/api/core'
-import { message } from '@tauri-apps/plugin-dialog'
-import { useCallback, useMemo } from 'react'
+import { useCallback } from 'react'
+import { reportError } from '../../../lib/errors'
 import { getFsInfo } from '../../../lib/format'
+import { fsInfoQueryOptions, hasFeature } from '../../../lib/hooks'
+import queryClient from '../../../lib/query'
+import { uploadEmptyFile } from '../../../lib/rclone/api'
 import rclone from '../../../lib/rclone/client'
-import { supportsPersistentEmptyFolders } from '../../../lib/rclone/constants'
 import type { RemoteString } from './types'
 import { RE_TRAILING_SEPARATORS } from './utils'
 
-export default function useCreateFolder(
-    remote: RemoteString,
-    cwd: string,
-    refresh: () => void
-) {
-    const remoteConfigQuery = useQuery({
-        queryKey: ['remote', remote, 'config'],
-        queryFn: async () => {
-            return await rclone('/config/get', {
-                params: { query: { name: remote! } },
-            })
-        },
-        enabled: !!remote && remote !== 'UI_LOCAL_FS' && remote !== 'UI_FAVORITES',
-    })
-
-    const backendType = useMemo(() => {
-        if (!remote || remote === 'UI_FAVORITES') return null
-        if (remote === 'UI_LOCAL_FS') return 'local'
-        return remoteConfigQuery.data?.type ?? null
-    }, [remote, remoteConfigQuery.data])
-
-    const canCreateFolder = useMemo(() => {
-        if (!remote || remote === 'UI_FAVORITES') return false
-        if (remote === 'UI_LOCAL_FS') return true
-        return supportsPersistentEmptyFolders(backendType)
-    }, [remote, backendType])
+export default function useCreateFolder(remote: RemoteString, cwd: string, refresh: () => void) {
+    const canCreateFolder = !!remote && remote !== 'UI_FAVORITES'
 
     const createFolder = useCallback(async () => {
         if (!remote || remote === 'UI_FAVORITES') return
-
-        if (!canCreateFolder) {
-            await message(
-                'This backend does not support persistent empty folders. Create a folder by uploading a file into it.',
-                { title: 'Unsupported Backend', kind: 'warning' }
-            )
-            return
-        }
 
         const folderName = await invoke<string | null>('prompt', {
             title: 'New Folder',
@@ -63,23 +32,36 @@ export default function useCreateFolder(
                     : `${remote}:/${normalizedPath}${normalizedPath ? '/' : ''}${normalizedFolderName}`
             const info = getFsInfo(fullTargetPath)
 
-            await rclone('/operations/mkdir' as any, {
-                params: {
-                    query: {
-                        fs: info.root === ':local:' ? ':local:/' : info.root,
-                        remote: info.filePath,
+            let supportsEmptyDirs = true
+            if (remote !== 'UI_LOCAL_FS') {
+                const fsInfo = await queryClient
+                    .ensureQueryData(fsInfoQueryOptions(remote))
+                    .catch(() => undefined)
+                if (fsInfo) supportsEmptyDirs = hasFeature(fsInfo, 'CanHaveEmptyDirectories')
+            }
+
+            if (supportsEmptyDirs) {
+                await rclone('/operations/mkdir' as any, {
+                    params: {
+                        query: {
+                            fs: info.root === ':local:' ? ':local:/' : info.root,
+                            remote: info.filePath,
+                        },
                     },
-                },
-            })
+                })
+            } else {
+                await uploadEmptyFile(info.root, info.filePath)
+            }
 
             refresh()
         } catch (error) {
-            await message(error instanceof Error ? error.message : 'Create folder failed', {
+            await reportError(error, {
                 title: 'Error',
-                kind: 'error',
+                fallback: 'Create folder failed',
+                capture: false,
             })
         }
-    }, [remote, cwd, refresh, canCreateFolder])
+    }, [remote, cwd, refresh])
 
     return { canCreateFolder, createFolder }
 }

@@ -4,19 +4,14 @@ import { exists, writeFile } from '@tauri-apps/plugin-fs'
 import { fetch } from '@tauri-apps/plugin-http'
 import { revealItemInDir } from '@tauri-apps/plugin-opener'
 import { platform } from '@tauri-apps/plugin-os'
+import { getFsInfo } from '../format'
+import rclone from './client'
 
 export async function needsMountPlugin() {
     console.log('[needsMountPlugin]')
 
     const currentPlatform = platform()
-    if (currentPlatform === 'macos') {
-        // check fuse-t or osxfuse
-        const hasFuseT = await exists('/Library/Application Support/fuse-t')
-        console.log('[needsMountPlugin] hasFuseT', hasFuseT)
-        const hasOsxFuse = await exists('/Library/Filesystems/macfuse.fs')
-        console.log('[needsMountPlugin] hasOsxFuse', hasOsxFuse)
-        return !hasFuseT && !hasOsxFuse
-    }
+
     if (currentPlatform === 'windows') {
         // check winfsp
         const hasWinFsp =
@@ -25,6 +20,7 @@ export async function needsMountPlugin() {
         console.log('[needsMountPlugin] hasWinFsp', hasWinFsp)
         return !hasWinFsp
     }
+
     return false
 }
 
@@ -32,26 +28,6 @@ export async function dialogGetMountPlugin() {
     console.log('[dialogGetMountPlugin]')
 
     const currentPlatform = platform()
-    if (currentPlatform === 'macos') {
-        // download fuse-t or osxfuse
-        const wantsDownload = await ask(
-            "Fuse-t is required on macOS to mount remotes. You can continue the operation once you're done with the installation.",
-            {
-                title: 'Fuse-t not installed',
-                kind: 'warning',
-                okLabel: 'Download',
-                cancelLabel: 'Cancel',
-            }
-        )
-        if (wantsDownload) {
-            const fuseInstallerUrl =
-                'https://github.com/macos-fuse-t/fuse-t/releases/download/1.0.49/fuse-t-macos-installer-1.0.49.pkg'
-            const localPath = `${await downloadDir()}/fuse-t-installer.pkg`
-            const installer = await (await fetch(fuseInstallerUrl)).arrayBuffer()
-            await writeFile(localPath, new Uint8Array(installer))
-            await revealItemInDir(localPath)
-        }
-    }
     if (currentPlatform === 'windows') {
         // download winfsp
         const wantsDownload = await ask(
@@ -65,11 +41,41 @@ export async function dialogGetMountPlugin() {
         )
         if (wantsDownload) {
             const winFspInstallerUrl =
-                'https://github.com/winfsp/winfsp/releases/download/v2.1/winfsp-2.1.25156.msi'
+                'https://github.com/winfsp/winfsp/releases/download/v2.2B4/winfsp-2.2.26215.msi'
             const localPath = `${await downloadDir()}/winfsp-installer.msi`
             const installer = await (await fetch(winFspInstallerUrl)).arrayBuffer()
             await writeFile(localPath, new Uint8Array(installer))
             await revealItemInDir(localPath)
         }
     }
+}
+
+export class AutomountSourceError extends Error {}
+
+export async function probeMountSource(source: string) {
+    const { root, filePath } = getFsInfo(source)
+
+    if (!filePath) {
+        await rclone('/operations/list', { params: { query: { fs: root, remote: '' } } })
+        return
+    }
+
+    const r = await rclone('/operations/stat', {
+        params: { query: { fs: root, remote: filePath } },
+    })
+    if (!r || !r.item) {
+        throw new AutomountSourceError(
+            `"${filePath}" was not found on ${root}. Fix the Remote Path in the remote's Auto Mount settings`
+        )
+    }
+    if (!r.item.IsDir) {
+        throw new AutomountSourceError(
+            `"${filePath}" on ${root} is a file, not a folder. Fix the Remote Path in the remote's Auto Mount settings`
+        )
+    }
+}
+
+export async function listMountSource(source: string) {
+    const { root, filePath } = getFsInfo(source)
+    await rclone('/operations/list', { params: { query: { fs: root, remote: filePath } } })
 }

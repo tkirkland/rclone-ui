@@ -1,10 +1,7 @@
+import { invoke } from '@tauri-apps/api/core'
 import { appLocalDataDir, sep } from '@tauri-apps/api/path'
-import { exists, mkdir, writeTextFile } from '@tauri-apps/plugin-fs'
-import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
-import { Command } from '@tauri-apps/plugin-shell'
-import createRCDClient from 'rclone-sdk'
-import { useHostStore } from '../../store/host'
-import type { FlagValue } from '../../types/rclone'
+import { exists, mkdir, readTextFile, writeTextFile } from '@tauri-apps/plugin-fs'
+import { selectActiveConfigFile, useHostStore } from '../../store/host'
 import { getConfigParentFolder } from '../format'
 import rclone from './client'
 import { DOUBLE_BACKSLASH_REGEX } from './constants'
@@ -25,70 +22,29 @@ export async function getDefaultPaths() {
     }
 }
 
-export async function getSystemConfigPath() {
-    console.log('[getSystemConfigPath] running system rclone')
-
-    const instance = Command.create('rclone-system', [
-        'rcd',
-        '--rc-no-auth',
-        '--rc-serve',
-        // '-rc-addr',
-        // ':5572',
-    ])
-
-    if (!instance) {
-        console.error('[getSystemConfigPath] failed to create rclone instance')
-        throw new Error('Failed to create rclone instance, please try again later.')
-    }
-
-    const output = await instance.spawn()
-
-    console.log('[getSystemConfigPath] spawned rclone')
-
-    await new Promise((resolve) => setTimeout(resolve, 200))
-
-    try {
-        // no host store at this point
-        const client = createRCDClient({
-            baseUrl: 'http://localhost:5572',
-            fetch: (request: Request) => tauriFetch(request),
-        })
-
-        const defaultPaths = await client.POST('/config/paths', {})
-
-        const configPath = defaultPaths.data?.config
-        if (!configPath) {
-            throw new Error('Failed to fetch config path')
-        }
-
-        return configPath.replace(DOUBLE_BACKSLASH_REGEX, '\\')
-    } catch (error) {
-        console.error('[getSystemConfigPath] error', error)
-        if (error instanceof Error) {
-            throw error
-        }
-        throw new Error('Failed to get default path, please try again later.')
-    } finally {
-        await output.kill()
-    }
+/** App-private location of the default config, used when there is no system rclone to defer to. */
+export async function appPrivateDefaultConfigPath() {
+    const appLocalDataDirPath = await appLocalDataDir()
+    return appLocalDataDirPath + sep() + 'configs' + sep() + 'default' + sep() + 'rclone.conf'
 }
 
 export async function getConfigPath({ id, validate = true }: { id: string; validate?: boolean }) {
     console.log('[getConfigPath]', id, validate)
 
     const appLocalDataDirPath = await appLocalDataDir()
-    console.log('[getConfigPath] appLocalDataDirPath', appLocalDataDirPath)
 
     let configPath = appLocalDataDirPath + sep() + 'configs' + sep() + id + sep() + 'rclone.conf'
 
-    console.log('[getConfigPath] configPath', configPath)
-
-    if (id == 'default' && (await isSystemRcloneInstalled())) {
-        const defaultPath = await getSystemConfigPath()
-
-        configPath = defaultPath
-        console.log('[getConfigPath] configPath', configPath)
+    // The "default" config lives at a location resolved once at adoption (native for a system
+    // rclone, app-private otherwise) and persisted, so switching binaries never moves remotes.
+    if (id === 'default') {
+        const persistedDefault = useHostStore.getState().defaultConfigPath
+        if (persistedDefault) {
+            configPath = persistedDefault
+        }
     }
+
+    console.log('[getConfigPath] configPath', configPath)
 
     if (validate) {
         const configExists = await exists(configPath)
@@ -101,82 +57,148 @@ export async function getConfigPath({ id, validate = true }: { id: string; valid
     return configPath
 }
 
+/**
+ * The on-disk path of a specific config file, mirroring initRclone's resolution: an external `sync`
+ * folder yields `<folder>/rclone.conf`, otherwise the config's own path (which for `default` honors
+ * the persisted defaultConfigPath). With `validate`, throws if the file is missing — including for a
+ * `sync` config, which `getConfigPath` cannot see (it only knows the app-private id-based path).
+ *
+ * Note: pointing a `sync` folder at the system rclone config dir (~/.config/rclone) is unsupported —
+ * it collides with the path config-sync manages. Config-sync treats it as circular (no ELOOP), but a
+ * switch-away/back cycle can shadow it; the sync-folder feature is meant for external/shared dirs.
+ */
+export async function resolveConfigFilePath(
+    config: { id?: string; sync?: string } | null | undefined,
+    { validate = false }: { validate?: boolean } = {}
+): Promise<string> {
+    if (config?.sync) {
+        const folder = config.sync.endsWith(sep()) ? config.sync : `${config.sync}${sep()}`
+        const path = `${folder}rclone.conf`
+        if (validate && !(await exists(path))) {
+            console.error('[resolveConfigFilePath] synced config file does not exist', path)
+            throw new Error('Config file does not exist')
+        }
+        return path
+    }
+
+    return getConfigPath({ id: config?.id ?? 'default', validate })
+}
+
+/**
+ * The on-disk path of the app's active config file — the single source of truth for config sync.
+ * Defaults to no existence check so it stays usable during startup reconcile.
+ */
+export async function resolveActiveConfigPath(opts: { validate?: boolean } = {}): Promise<string> {
+    return resolveConfigFilePath(selectActiveConfigFile(useHostStore.getState()), opts)
+}
+
 export async function createConfigFile(path: string) {
     console.log('[createConfigFile] path', path)
 
-    const hasConfig = await exists(path).catch(() => false)
-    console.log('[createConfigFile] hasConfig', hasConfig)
-    if (!hasConfig) {
-        console.log('[createConfigFile] writing space character to default path (1)', path)
+    if (await exists(path).catch(() => false)) {
+        return
+    }
+
+    try {
+        await writeTextFile(path, '# Empty config file\n')
+    } catch {
+        // Write-first, then create the parent dir on failure and retry. Do NOT mkdir first:
+        // getConfigParentFolder returns the path UNCHANGED for non-rclone.conf filenames, so an
+        // unconditional mkdir could create a directory at the config file path.
+        await mkdir(getConfigParentFolder(path), { recursive: true })
+        await writeTextFile(path, '# Empty config file\n')
+    }
+}
+
+/**
+ * Locates a genuine system rclone on PATH (excluding the app's own PATH-integration pointer).
+ * Returns null under Flatpak, where the host PATH is unreachable.
+ */
+export async function findSystemRclone(): Promise<string | null> {
+    try {
+        if (await invoke<boolean>('is_flatpak')) {
+            return null
+        }
+        return (await invoke<string | null>('find_system_rclone')) ?? null
+    } catch (error) {
+        console.error('[findSystemRclone] error', error)
+        return null
+    }
+}
+
+/** Runs `<path> version` and returns the parsed version string; throws the detailed Rust error
+ * (including the macOS Gatekeeper `xattr` hint) when the binary is unusable. */
+export async function probeRcloneBinaryOrThrow(path: string): Promise<string> {
+    return await invoke<string>('validate_rclone_binary', { path })
+}
+
+/** Like probeRcloneBinaryOrThrow, but returns null instead of throwing. */
+export async function validateRcloneBinary(path: string): Promise<string | null> {
+    try {
+        return await probeRcloneBinaryOrThrow(path)
+    } catch (error) {
+        console.error('[validateRcloneBinary] error', error)
+        return null
+    }
+}
+
+export interface RcloneClassification {
+    kind: 'system' | 'managed' | 'custom'
+    version: string | null
+}
+
+/** Classifies a path as system / managed / custom using canonical comparisons in Rust. */
+export async function classifyRclonePath(path: string): Promise<RcloneClassification> {
+    try {
+        return await invoke<RcloneClassification>('classify_rclone_path', { path })
+    } catch (error) {
+        console.error('[classifyRclonePath] error', error)
+        return { kind: 'custom', version: null }
+    }
+}
+
+/**
+ * Resolves where the default config should live, driven by what the user already uses:
+ * an app-private config that already holds remotes wins; otherwise a system rclone's native
+ * config; otherwise the app-private default. Called once, then persisted.
+ */
+export async function resolveDefaultConfigPath(): Promise<string> {
+    const appPrivate = await appPrivateDefaultConfigPath()
+
+    try {
+        if (await exists(appPrivate)) {
+            const content = await readTextFile(appPrivate)
+            // A section header — or an encrypted body, which has no headers — means the user
+            // has real remotes here; keep them.
+            if (/^\s*\[/m.test(content) || content.includes('RCLONE_ENCRYPT_V0:')) {
+                return appPrivate
+            }
+        }
+    } catch (error) {
+        console.error('[resolveDefaultConfigPath] failed reading app-private config', error)
+    }
+
+    const system = await findSystemRclone()
+    if (system) {
         try {
-            await writeTextFile(path, '# Empty config file\n')
+            const native = await invoke<string>('rclone_config_path', { path: system })
+            if (native) {
+                return native.replace(DOUBLE_BACKSLASH_REGEX, '\\')
+            }
         } catch (error) {
-            console.error('[createConfigFile] error', error)
-        }
-
-        if (!(await exists(path).catch(() => false))) {
-            console.log(
-                '[createConfigFile] failed to write space character to default path (1)',
-                path
-            )
-            const folderPath = getConfigParentFolder(path)
-            console.log('[createConfigFile] creating folder', folderPath)
-            await mkdir(folderPath, { recursive: true })
-            console.log('[createConfigFile] created folder', folderPath)
-            console.log('[createConfigFile] writing space character to default path (2)', path)
-            await writeTextFile(path, '# Empty config file\n')
-            const existsFinally = await exists(path).catch(() => false)
-            console.log('[createConfigFile] existsFinally', existsFinally)
+            console.error('[resolveDefaultConfigPath] failed reading native config path', error)
         }
     }
-}
 
-/**
- * Checks if rclone is installed and accessible from the system PATH
- * @returns {Promise<boolean>} True if rclone is installed and working
- */
-export async function isSystemRcloneInstalled() {
-    console.log('[isSystemRcloneInstalled]')
-
-    try {
-        const output = await Command.create('rclone-system').execute()
-        return (
-            output.stdout.includes('Available commands') ||
-            output.stderr.includes('Available commands')
-        )
-    } catch {
-        return false
-    }
-}
-
-/**
- * Checks if rclone is downloaded by the application in the app's local data directory
- * @returns {Promise<boolean>} True if downloaded rclone is present and working
- */
-export async function isInternalRcloneInstalled() {
-    console.log('[isInternalRcloneInstalled]')
-
-    try {
-        const output = await Command.create('rclone-internal').execute()
-        // console.log('[isInternalRcloneInstalled] output', output)
-        return (
-            output.stdout.includes('Available commands') ||
-            output.stderr.includes('Available commands')
-        )
-    } catch {
-        return false
-    }
-}
-
-export function parseRcloneOptions(options: Record<string, FlagValue>) {
-    console.log('[parseRcloneOptions]', options)
-
-    return options
+    return appPrivate
 }
 
 export function compareVersions(version1: string, version2: string): number {
     const parseVersion = (version: string) => {
-        const parts = version.split('.').map((num) => Number.parseInt(num, 10))
+        // Strip a leading 'v' and any pre-release suffix (e.g. "1.74.0-beta.x") before comparing;
+        // otherwise parseInt('v1') is NaN → coerced to 0, silently mis-ordering versions.
+        const core = version.trim().replace(/^v/, '').split('-')[0]
+        const parts = core.split('.').map((num) => Number.parseInt(num, 10))
         return {
             major: parts[0] || 0,
             minor: parts[1] || 0,
@@ -197,68 +219,4 @@ export function compareVersions(version1: string, version2: string): number {
         return v1.patch > v2.patch ? 1 : -1
     }
     return 0
-}
-
-const YOURS_VERSION_REGEX = /yours:\s+([^\s]+)/
-const LATEST_VERSION_REGEX = /latest:\s+([^\s]+)/
-
-export async function getRcloneVersion(type?: 'system' | 'internal') {
-    let instanceType = type
-    if (!instanceType) {
-        instanceType = (await isSystemRcloneInstalled()) ? 'system' : 'internal'
-    }
-
-    const result = await Command.create(
-        instanceType === 'system' ? 'rclone-system' : 'rclone-internal',
-        ['selfupdate', '--check']
-    ).execute()
-    const output = result.stdout.trim()
-    return parseRcloneVersion(output)
-}
-
-export function parseRcloneVersion(output: string) {
-    const yoursMatch = output.match(YOURS_VERSION_REGEX)
-    const latestMatch = output.match(LATEST_VERSION_REGEX)
-
-    if (!yoursMatch || !latestMatch) {
-        return null
-    }
-
-    return {
-        yours: yoursMatch[1],
-        latest: latestMatch[1],
-    }
-}
-
-export function shouldUpdateRclone(versionData: { yours: string; latest: string } | null) {
-    if (!versionData) {
-        console.warn('[shouldUpdateRclone] received no version data:', versionData)
-        return false
-    }
-
-    const currentVersion = versionData?.yours
-    const latestVersion = versionData?.latest
-
-    if (!currentVersion || !latestVersion) {
-        console.warn('[shouldUpdateRclone] could not parse version output:', versionData)
-        return false
-    }
-
-    console.log('[shouldUpdateRclone] current version:', currentVersion)
-    console.log('[shouldUpdateRclone] latest version:', latestVersion)
-
-    if (useHostStore.getState().lastSkippedVersion === latestVersion) {
-        console.log('[shouldUpdateRclone] latest version is in the lastSkippedVersion')
-        return false
-    }
-
-    // Compare versions using the existing compareVersions function
-    const versionComparison = compareVersions(currentVersion, latestVersion)
-    if (versionComparison < 0) {
-        console.log('[shouldUpdateRclone] internal rclone needs update')
-        return true
-    }
-
-    console.log('[shouldUpdateRclone] internal rclone is up to date')
-    return false
 }

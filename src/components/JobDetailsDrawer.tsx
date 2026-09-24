@@ -17,9 +17,11 @@ import { platform } from '@tauri-apps/plugin-os'
 import { ExternalLinkIcon, RefreshCwIcon, SearchCheckIcon, SquareIcon } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { formatBytes } from '../../lib/format'
-import notify from '../../lib/notify'
+import { useIsPreview } from '../../lib/preview'
+import { notify } from '../../lib/notifications'
 import { startBatch } from '../../lib/rclone/api'
 import rclone from '../../lib/rclone/client'
+import { useStore } from '../../store/memory'
 import type { JobItem } from '../../types/jobs'
 
 export default function JobDetailsDrawer({
@@ -34,6 +36,7 @@ export default function JobDetailsDrawer({
     onSelectJob?: (job: JobItem) => void
 }) {
     const queryClient = useQueryClient()
+    const isPreview = useIsPreview()
     const [retryStatus, setRetryStatus] = useState<
         Map<string, { status: 'pending' | 'started' | 'error'; jobId?: number; error?: string }>
     >(new Map())
@@ -100,6 +103,13 @@ export default function JobDetailsDrawer({
 
     const stopJobMutation = useMutation({
         mutationFn: async (jobId: number) => {
+            // Un-watch before stopping: a stopped job finishes with an error, which would
+            // otherwise surface as a bogus "Transfer failed" webhook notification.
+            useStore.setState((state) => {
+                const watchedJobs = { ...state.watchedJobs }
+                delete watchedJobs[jobId]
+                return { watchedJobs }
+            })
             await rclone('/job/stopgroup', {
                 params: {
                     query: {
@@ -130,7 +140,9 @@ export default function JobDetailsDrawer({
             input,
         }: { key: string; input: { _path: string } & Record<string, any> }) => {
             setRetryStatus((prev) => new Map(prev).set(key, { status: 'pending' }))
-            const jobId = await startBatch([input])
+            const jobId = await startBatch([input], undefined, {
+                configParam: typeof input._config === 'string' ? input._config : undefined,
+            })
             return { key, jobId }
         },
         onSuccess: ({ key, jobId }) => {
@@ -292,6 +304,7 @@ export default function JobDetailsDrawer({
                                     >
                                         <Progress
                                             value={item.percentage}
+                                            disableAnimation={isPreview}
                                             classNames={{
                                                 base: 'overflow-hidden rounded-full max-w-lg',
                                             }}

@@ -1,18 +1,34 @@
 use machine_uid;
 use sentry;
-use std::fs::{self, File};
-use std::path::Path;
+use std::fs;
 use sysinfo::System;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_sentry;
 use tinyfiledialogs as tfd;
-use zip::ZipArchive;
 
 #[path = "../common/shortcut.rs"]
 mod shortcut;
 
 #[path = "../common/window.rs"]
 mod window;
+
+#[cfg(target_os = "linux")]
+mod jenky;
+mod local_fs;
+mod notifications;
+mod scheduler;
+mod zookeeper;
+
+/// Entry point for the headless `run-task` mode (see main.rs). Never touches tauri::Builder.
+pub fn run_scheduled_task(
+    task_id: &str,
+    host_id: &str,
+    forced: bool,
+    data_dir: Option<&str>,
+    local_data_dir: Option<&str>,
+) -> i32 {
+    scheduler::runner::run(task_id, host_id, forced, data_dir, local_data_dir)
+}
 
 use shortcut::{
     ensure_toolbar_window, set_toolbar_shortcut, show_toolbar_window, DEFAULT_TOOLBAR_SHORTCUT,
@@ -63,13 +79,19 @@ fn is_linux_mint() -> bool {
     }
 }
 
+/// The single Flatpak permission gate: the app quits at startup unless it holds BOTH writable
+/// host filesystem access (rclone needs it) AND host-spawn access (the scheduler needs it). This
+/// all-or-nothing check is why no other Flatpak permission checks exist elsewhere — any running
+/// instance is guaranteed to have full permissions.
 #[tauri::command]
 fn has_flatpak_permissions() -> bool {
-    // Native app: no Flatpak permission needed.
     if !is_flatpak() {
         return true;
     }
+    has_host_filesystem() && flatpak_can_spawn_host()
+}
 
+fn has_host_filesystem() -> bool {
     let Ok(contents) = std::fs::read_to_string("/.flatpak-info") else {
         return false;
     };
@@ -127,49 +149,78 @@ fn has_flatpak_permissions() -> bool {
     false
 }
 
-#[tauri::command]
-fn unzip_file(zip_path: &str, output_folder: &str) -> Result<(), String> {
-    // Open the zip file
-    let file = File::open(zip_path).map_err(|e| e.to_string())?;
+/// Whether the sandbox can spawn processes on the host (`flatpak-spawn --host`), which the
+/// scheduler needs to register OS cron jobs. Always true off Flatpak. Granted by
+/// `--talk-name=org.freedesktop.Flatpak`, which appears in /.flatpak-info under
+/// `[Session Bus Policy]` as `org.freedesktop.Flatpak=talk` (or `own`).
+pub(crate) fn flatpak_can_spawn_host() -> bool {
+    if !is_flatpak() {
+        return true;
+    }
+    let Ok(contents) = std::fs::read_to_string("/.flatpak-info") else {
+        return false;
+    };
+    flatpak_info_grants_host_spawn(&contents)
+}
 
-    // Create output directory if it doesn't exist
-    fs::create_dir_all(output_folder).map_err(|e| e.to_string())?;
+/// True when the parsed /.flatpak-info grants `org.freedesktop.Flatpak` in `[Session Bus Policy]`.
+fn flatpak_info_grants_host_spawn(contents: &str) -> bool {
+    let mut in_session_bus = false;
+    for line in contents.lines() {
+        let line = line.trim();
 
-    // Create ZIP archive reader
-    let mut archive = ZipArchive::new(file).map_err(|e| e.to_string())?;
-
-    // Extract everything
-    for i in 0..archive.len() {
-        let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
-        let outpath = Path::new(output_folder).join(file.name());
-
-        if file.name().ends_with('/') || file.name().ends_with('\\') {
-            fs::create_dir_all(&outpath).map_err(|e| e.to_string())?;
-        } else {
-            if let Some(p) = outpath.parent() {
-                fs::create_dir_all(p).map_err(|e| e.to_string())?;
-            }
-            let mut outfile = File::create(&outpath).map_err(|e| e.to_string())?;
-            std::io::copy(&mut file, &mut outfile).map_err(|e| e.to_string())?;
+        if line.starts_with('[') && line.ends_with(']') {
+            in_session_bus = line == "[Session Bus Policy]";
+            continue;
         }
 
-        // Get and set permissions (Unix only)
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            if let Some(mode) = file.unix_mode() {
-                fs::set_permissions(&outpath, fs::Permissions::from_mode(mode))
-                    .map_err(|e| e.to_string())?;
+        if !in_session_bus {
+            continue;
+        }
+
+        if let Some((key, value)) = line.split_once('=') {
+            if key.trim() == "org.freedesktop.Flatpak" {
+                let policy = value.trim();
+                return policy == "talk" || policy == "own";
             }
         }
     }
 
-    Ok(())
+    false
 }
 
-#[tauri::command]
-async fn stop_pid(pid: u32, timeout_ms: Option<u64>) -> Result<(), String> {
-    let _timeout = timeout_ms.unwrap_or(5000);
+#[cfg(test)]
+mod flatpak_tests {
+    use super::flatpak_info_grants_host_spawn;
+
+    #[test]
+    fn detects_granted_talk_permission() {
+        let info = "[Application]\nname=com.rcloneui.RcloneUI\n\n[Session Bus Policy]\norg.freedesktop.Flatpak=talk\norg.freedesktop.Notifications=talk\n";
+        assert!(flatpak_info_grants_host_spawn(info));
+    }
+
+    #[test]
+    fn own_policy_also_counts() {
+        let info = "[Session Bus Policy]\norg.freedesktop.Flatpak=own\n";
+        assert!(flatpak_info_grants_host_spawn(info));
+    }
+
+    #[test]
+    fn absent_or_other_sections_do_not_count() {
+        // Permission not listed at all.
+        let info = "[Session Bus Policy]\norg.freedesktop.Notifications=talk\n";
+        assert!(!flatpak_info_grants_host_spawn(info));
+        // Same key but in a different section must not match.
+        let wrong_section = "[System Bus Policy]\norg.freedesktop.Flatpak=talk\n";
+        assert!(!flatpak_info_grants_host_spawn(wrong_section));
+        // Explicit 'none' policy.
+        let none = "[Session Bus Policy]\norg.freedesktop.Flatpak=none\n";
+        assert!(!flatpak_info_grants_host_spawn(none));
+    }
+}
+
+pub(crate) async fn kill_pid(pid: u32, timeout_ms: Option<u64>) -> Result<(), String> {
+    let timeout = timeout_ms.unwrap_or(5000);
 
     #[cfg(any(
         target_os = "macos",
@@ -188,7 +239,7 @@ async fn stop_pid(pid: u32, timeout_ms: Option<u64>) -> Result<(), String> {
             .args(&["-TERM", &pid_str])
             .status();
 
-        let deadline = Instant::now() + Duration::from_millis(_timeout);
+        let deadline = Instant::now() + Duration::from_millis(timeout);
         while Instant::now() < deadline {
             // Check if process still exists: kill -0 <pid>
             let alive = std::process::Command::new("kill")
@@ -222,6 +273,8 @@ async fn stop_pid(pid: u32, timeout_ms: Option<u64>) -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     {
+        use std::time::{Duration, Instant};
+
         let pid_str = pid.to_string();
 
         let _ = std::process::Command::new("taskkill")
@@ -323,18 +376,13 @@ async fn stop_rclone_processes(timeout_ms: Option<u64>) -> Result<u32, String> {
 
     let mut stopped: u32 = 0;
     for pid in pids {
-        match stop_pid(pid, Some(timeout)).await {
+        match kill_pid(pid, Some(timeout)).await {
             Ok(()) => stopped += 1,
             Err(_e) => {}
         }
     }
 
     Ok(stopped)
-}
-
-#[allow(dead_code)]
-async fn prompt_password(title: String, message: String) -> Result<Option<String>, String> {
-    prompt_text(title, message, None, Some(true)).await
 }
 
 async fn prompt_text(
@@ -349,19 +397,27 @@ async fn prompt_text(
 
         let default_value = default.unwrap_or_default();
         let is_sensitive = sensitive.unwrap_or(false);
+
+        // AppleScript string literals can't contain a raw newline, so a multi-line message (e.g. a
+        // numbered choice list) must have its newlines turned into the `\n` escape sequence. Escape
+        // backslashes and quotes first so the conversions don't collide.
+        let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
+        let esc_message = esc(&message)
+            .replace("\r\n", "\\n")
+            .replace('\n', "\\n")
+            .replace('\r', "\\n");
+        let esc_title = esc(&title);
+        let esc_default = esc(&default_value);
+
         let script = if is_sensitive {
             format!(
                 r#"display dialog "{}" with title "{}" default answer "{}" with hidden answer"#,
-                message.replace("\"", "\\\""),
-                title.replace("\"", "\\\""),
-                default_value.replace("\"", "\\\""),
+                esc_message, esc_title, esc_default,
             )
         } else {
             format!(
                 r#"display dialog "{}" with title "{}" default answer "{}""#,
-                message.replace("\"", "\\\""),
-                title.replace("\"", "\\\""),
-                default_value.replace("\"", "\\\""),
+                esc_message, esc_title, esc_default,
             )
         };
 
@@ -400,11 +456,19 @@ async fn prompt_text(
         let default_value = default.unwrap_or_default();
         let is_sensitive = sensitive.unwrap_or(false);
 
-        // Use PowerShell to create a simple text input dialog
+        // Use PowerShell to create a simple text input dialog. PowerShell single-quoted strings keep
+        // literal newlines, so a multi-line message (e.g. a numbered choice list) renders across
+        // lines in the label — we just have to grow the label/form to fit its line count.
         let ps_default = default_value.replace('\'', "''");
         let ps_title = title.replace('\'', "''");
         let ps_message = message.replace('\'', "''");
         let ps_password_flag = if is_sensitive { "$true" } else { "$false" };
+
+        let line_count = message.lines().count().max(1) as i32;
+        let label_height = (line_count * 18 + 8).clamp(40, 380);
+        let textbox_y = 15 + label_height + 8;
+        let button_y = textbox_y + 34;
+        let form_height = button_y + 70;
 
         let powershell_script = format!(
             r#"
@@ -413,7 +477,7 @@ async fn prompt_text(
 
             $form = New-Object System.Windows.Forms.Form
             $form.Text = '{title}'
-            $form.Size = New-Object System.Drawing.Size(350, 180)
+            $form.Size = New-Object System.Drawing.Size(350, {form_height})
             $form.StartPosition = 'CenterScreen'
             $form.FormBorderStyle = 'FixedDialog'
             $form.MaximizeBox = $false
@@ -422,19 +486,19 @@ async fn prompt_text(
 
             $label = New-Object System.Windows.Forms.Label
             $label.Location = New-Object System.Drawing.Point(10, 15)
-            $label.Size = New-Object System.Drawing.Size(320, 40)
+            $label.Size = New-Object System.Drawing.Size(320, {label_height})
             $label.Text = '{message}'
             $form.Controls.Add($label)
 
             $textBox = New-Object System.Windows.Forms.TextBox
-            $textBox.Location = New-Object System.Drawing.Point(10, 60)
+            $textBox.Location = New-Object System.Drawing.Point(10, {textbox_y})
             $textBox.Size = New-Object System.Drawing.Size(320, 20)
             $textBox.Text = '{default}'
             $textBox.UseSystemPasswordChar = {password}
             $form.Controls.Add($textBox)
 
             $okButton = New-Object System.Windows.Forms.Button
-            $okButton.Location = New-Object System.Drawing.Point(175, 100)
+            $okButton.Location = New-Object System.Drawing.Point(175, {button_y})
             $okButton.Size = New-Object System.Drawing.Size(75, 23)
             $okButton.Text = 'OK'
             $okButton.DialogResult = [System.Windows.Forms.DialogResult]::OK
@@ -442,7 +506,7 @@ async fn prompt_text(
             $form.Controls.Add($okButton)
 
             $cancelButton = New-Object System.Windows.Forms.Button
-            $cancelButton.Location = New-Object System.Drawing.Point(255, 100)
+            $cancelButton.Location = New-Object System.Drawing.Point(255, {button_y})
             $cancelButton.Size = New-Object System.Drawing.Size(75, 23)
             $cancelButton.Text = 'Cancel'
             $cancelButton.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
@@ -459,7 +523,11 @@ async fn prompt_text(
             title = ps_title,
             message = ps_message,
             default = ps_default,
-            password = ps_password_flag
+            password = ps_password_flag,
+            form_height = form_height,
+            label_height = label_height,
+            textbox_y = textbox_y,
+            button_y = button_y,
         );
 
         let output = Command::new("powershell")
@@ -489,7 +557,6 @@ async fn prompt_text(
     }
 }
 
-#[allow(dead_code)]
 async fn tiny_prompt_text(
     title: String,
     message: String,
@@ -545,20 +612,21 @@ async fn start_cloudflared_tunnel(app: tauri::AppHandle) -> Result<(u32, String)
         .path()
         .app_local_data_dir()
         .map_err(|e| format!("Failed to get app local data directory: {}", e))?;
-    
+
     #[cfg(target_os = "windows")]
     let binary_name = "cloudflared.exe";
     #[cfg(not(target_os = "windows"))]
     let binary_name = "cloudflared";
-    
+
     let cloudflared_path = app_local_data_dir.join(binary_name);
-    
+
     if !cloudflared_path.exists() {
         return Err("Cloudflared binary not found".to_string());
     }
 
     // Start cloudflared tunnel
     let mut child = SysCommand::new(&cloudflared_path)
+        // keep in sync with RC_PORT in lib/hosts.ts
         .args(&["tunnel", "--url", "http://localhost:5572"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -602,21 +670,21 @@ async fn start_cloudflared_tunnel(app: tauri::AppHandle) -> Result<(u32, String)
     }
 
     // If we didn't get a URL, kill the process and return error
-    let _ = stop_pid(pid, Some(2000)).await;
+    let _ = kill_pid(pid, Some(2000)).await;
     Err("Failed to get tunnel URL from cloudflared".to_string())
 }
 
 #[tauri::command]
 async fn stop_cloudflared_tunnel(pid: u32) -> Result<(), String> {
     use std::time::Duration;
-    
+
     // Cloudflared takes ~5s to gracefully shut down, so give it enough time
-    match stop_pid(pid, Some(6000)).await {
+    match kill_pid(pid, Some(6000)).await {
         Ok(()) => Ok(()),
         Err(e) => {
             // Wait a bit for the process to fully terminate
             std::thread::sleep(Duration::from_millis(200));
-            
+
             // Even if we get an error, the process might have stopped
             // Check one more time if the process is actually gone
             #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -626,31 +694,31 @@ async fn stop_cloudflared_tunnel(pid: u32) -> Result<(), String> {
                     .status()
                     .map(|s| s.success())
                     .unwrap_or(false);
-                
+
                 if !alive {
                     // Process is gone, consider it a success
                     return Ok(());
                 }
             }
-            
+
             #[cfg(target_os = "windows")]
             {
                 let output = std::process::Command::new("tasklist")
                     .args(&["/FI", &format!("PID eq {}", pid), "/FO", "CSV", "/NH"])
                     .output();
-                
+
                 if let Ok(output) = output {
                     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-                    if stdout.trim().is_empty() 
-                        || stdout.contains("No tasks are running") 
-                        || !stdout.contains(&pid.to_string()) 
+                    if stdout.trim().is_empty()
+                        || stdout.contains("No tasks are running")
+                        || !stdout.contains(&pid.to_string())
                     {
                         // Process is gone, consider it a success
                         return Ok(());
                     }
                 }
             }
-            
+
             // As a last resort, check if a process with this PID is still a cloudflared process
             let system = System::new_all();
             let mut cloudflared_still_running = false;
@@ -752,119 +820,6 @@ async fn test_proxy_connection(proxy_url: String) -> Result<String, String> {
     Err(last_error.unwrap_or_else(|| "All proxy tests failed".to_string()))
 }
 
-#[tauri::command]
-async fn update_system_rclone() -> Result<i32, String> {
-    #[cfg(target_os = "macos")]
-    {
-        use std::process::Command as SysCommand;
-
-        fn quote_posix(value: &str) -> String {
-            let escaped = value.replace("'", "'\\''");
-            format!("'{}'", escaped)
-        }
-
-        let mut cmdline =
-            String::from("PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH; ");
-        cmdline.push_str(&quote_posix("rclone"));
-        cmdline.push(' ');
-        cmdline.push_str(&quote_posix("selfupdate"));
-
-        // Escape for embedding inside an AppleScript string literal
-        let applescript_cmd = cmdline.replace('\\', "\\\\").replace('"', "\\\"");
-        let prompt = "Rclone UI needs permission to run rclone selfupdate.";
-        let script = format!(
-            "do shell script \"{}\" with administrator privileges with prompt \"{}\"",
-            applescript_cmd,
-            prompt.replace('"', "\\\"")
-        );
-
-        let status = SysCommand::new("osascript")
-            .arg("-e")
-            .arg(script)
-            .status()
-            .map_err(|e| e.to_string())?;
-        return Ok(status.code().unwrap_or(0));
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        use std::process::Command as SysCommand;
-
-        let path_env =
-            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin";
-
-        // Try PolicyKit first (graphical auth prompt on most desktops)
-        let mut pkexec_args: Vec<String> = Vec::new();
-        pkexec_args.push("--description".to_string());
-        pkexec_args.push("Rclone UI needs to run rclone selfupdate".to_string());
-        pkexec_args.push("env".to_string());
-        pkexec_args.push(path_env.to_string());
-        pkexec_args.push("rclone".to_string());
-        pkexec_args.push("selfupdate".to_string());
-
-        match SysCommand::new("pkexec").args(&pkexec_args).status() {
-            Ok(status) => return Ok(status.code().unwrap_or(0)),
-            Err(_e) => {
-                // Fallback to sudo with custom prompt (works if the user has NOPASSWD or cached credentials)
-                let mut sudo_env = std::collections::HashMap::new();
-                sudo_env.insert("SUDO_PROMPT", "Rclone UI needs permission to run rclone selfupdate. Please enter your password: ");
-
-                let mut sudo_args: Vec<String> = Vec::new();
-                sudo_args.push("-n".to_string());
-                sudo_args.push("env".to_string());
-                sudo_args.push(path_env.to_string());
-                sudo_args.push("rclone".to_string());
-                sudo_args.push("selfupdate".to_string());
-
-                let status = SysCommand::new("sudo")
-                    .envs(&sudo_env)
-                    .args(&sudo_args)
-                    .status()
-                    .map_err(|e| e.to_string())?;
-                return Ok(status.code().unwrap_or(0));
-            }
-        }
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        use std::process::Command as SysCommand;
-
-        fn quote_ps(value: &str) -> String {
-            // PowerShell single-quote escaping: ' -> ''
-            format!("'{}'", value.replace('\'', "''"))
-        }
-
-        let file_path = quote_ps("rclone");
-        let arg_list = String::from("@('selfupdate')");
-
-        let ps_script = format!(
-            "$p = Start-Process -Verb RunAs -WindowStyle Hidden -PassThru -FilePath {file} -ArgumentList {args}; \n\
-            $p.WaitForExit();\n\
-            exit $p.ExitCode",
-            file = file_path,
-            args = arg_list
-        );
-
-        let status = SysCommand::new("powershell")
-            .args([
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                &ps_script,
-            ])
-            .status()
-            .map_err(|e| e.to_string())?;
-        return Ok(status.code().unwrap_or(0));
-    }
-
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    {
-        Err("Unsupported platform".to_string())
-    }
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let client = sentry::init((
@@ -886,12 +841,19 @@ pub fn run() {
             }));
     }
 
-    #[allow(unused_mut)]
+    #[cfg(target_os = "linux")]
+    {
+        builder = builder.plugin(jenky::init());
+    }
+
     let mut app = builder
+        .manage(local_fs::LocalFsState::default())
+        .manage::<zookeeper::SharedDaemonState>(std::sync::Mutex::new(
+            zookeeper::DaemonState::default(),
+        ))
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_sentry::init_with_no_injection(&client))
         .plugin(tauri_plugin_clipboard_manager::init())
-
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_process::init())
@@ -904,25 +866,23 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_log::Builder::new().build())
-        .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_prevent_default::debug())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
-            unzip_file,
             get_arch,
             get_uid,
             is_rclone_running,
             stop_rclone_processes,
             prompt,
-            stop_pid,
             update_toolbar_shortcut,
             show_toolbar,
-            update_system_rclone,
             test_proxy_connection,
             is_flatpak,
             is_linux_mint,
             has_flatpak_permissions,
+            local_fs::list_local_directory,
+            local_fs::cancel_local_directory,
             open_full_window,
             open_window,
             open_small_window,
@@ -930,11 +890,49 @@ pub fn run() {
             unlock_windows,
 			start_cloudflared_tunnel,
 			stop_cloudflared_tunnel,
-			extract_tgz
+			extract_tgz,
+            zookeeper::exec_rclone,
+            zookeeper::spawn_rclone,
+            zookeeper::kill_rclone_daemon,
+            zookeeper::validate_rclone_binary,
+            zookeeper::rclone_config_path,
+            zookeeper::find_system_rclone,
+            zookeeper::classify_rclone_path,
+            zookeeper::list_downloaded_rclone_versions,
+            zookeeper::delete_rclone_version,
+            zookeeper::adopt_legacy_rclone,
+            zookeeper::managed_version_path,
+            zookeeper::download_rclone_version,
+            zookeeper::update_path_pointer,
+            zookeeper::get_rclone_path_integration,
+            zookeeper::set_rclone_path_integration,
+            zookeeper::get_config_sync_status,
+            zookeeper::set_config_sync,
+            scheduler::scheduler_supported,
+            scheduler::scheduler_validate_cron,
+            scheduler::scheduler_register,
+            scheduler::scheduler_unregister,
+            scheduler::scheduler_set_enabled,
+            scheduler::scheduler_run_now,
+            scheduler::scheduler_status,
+            scheduler::scheduler_read_history,
+            scheduler::scheduler_read_log,
+            scheduler::scheduler_unregister_all,
+            scheduler::scheduler_sweep_orphans,
+            notifications::notifications_catalog,
+            notifications::notifications_list_targets,
+            notifications::notifications_add_target,
+            notifications::notifications_update_target,
+            notifications::notifications_remove_target,
+            notifications::notifications_dispatch,
+            notifications::notifications_send_test
         ])
         .setup(|app| {
             #[cfg(target_os = "linux")]
             {
+                // The quirk decided before the log plugin was live; restate it into the log file.
+                log::info!("jenky: {}", jenky::summary());
+
                 // Flatpak/Flathub sandbox typically cannot write to system desktop/mime locations.
                 // Deep-link registration is best-effort; never fail app startup.
                 if is_flatpak() {
@@ -945,7 +943,7 @@ pub fn run() {
                         log::warn!("deep-link registration failed (continuing): {}", err);
                     }
                 }
-				
+
                 let cache_dir = app.path().cache_dir()?;
                 let package_info = app.package_info();
                 let app_name = package_info.name.as_str();
@@ -962,6 +960,10 @@ pub fn run() {
                     log::warn!("deep-link registration failed (continuing): {}", err);
                 }
             }
+
+            // Reclaim leftover .tmp-* download staging dirs from an interrupted download. Runs
+            // once here (before any webview) so it can never race a live download.
+            zookeeper::sweep_versions_tmp(app.handle());
 
             if let Err(err) = ensure_toolbar_window(&app.handle()) {
                 log::warn!("failed to prepare toolbar window: {}", err);
