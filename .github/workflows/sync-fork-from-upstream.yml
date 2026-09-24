@@ -37,11 +37,14 @@ jobs:
 
           BEFORE=$(git rev-parse origin/main)
           git checkout -B upstream-mirror upstream/main
-          rm -f .github/workflows/release-winget.yml
 
-          if ! git diff --quiet upstream/main -- .github/workflows/release-winget.yml; then
-            git add .github/workflows/release-winget.yml
-            git commit -m "ci: remove upstream winget workflow from fork mirror"
+          # GITHUB_TOKEN may not push changes to workflow files, so main keeps its
+          # own frozen copy of .github/workflows instead of upstream's
+          git rm -r -q --ignore-unmatch .github/workflows
+          git checkout origin/main -- .github/workflows
+
+          if ! git diff --cached --quiet; then
+            git commit -m "ci: keep fork workflows in upstream mirror"
           fi
 
           if [ "$(git rev-parse origin/main^{tree})" = "$(git rev-parse HEAD^{tree})" ]; then
@@ -72,6 +75,13 @@ jobs:
           This issue is a notification only. Do not merge \`main\` into \`personal_changes\` blindly; \`personal_changes\` intentionally skips upstream repo/packaging changes that do not apply to this fork.
           EOF
           )"
+
+          # issues are disabled on this fork; fall back to the run summary
+          if [ "$(gh repo view --json hasIssuesEnabled --jq .hasIssuesEnabled)" != "true" ]; then
+            echo "Issues are disabled on this repo; writing the review note to the job summary instead."
+            echo "$BODY" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
 
           EXISTING=$(gh issue list --state open --json number,title --jq ".[] | select(.title == \"$TITLE\") | .number" | head -n 1)
 
