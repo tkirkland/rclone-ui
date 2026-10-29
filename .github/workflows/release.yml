@@ -1,4 +1,4 @@
-name: 'release-native'
+name: 'release'
 
 on:
   workflow_dispatch
